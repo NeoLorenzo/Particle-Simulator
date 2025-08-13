@@ -15,6 +15,6 @@
     "max_temp": 1000.0,
     "heat_transfer_coefficient": 0.1,
     "coefficient_of_restitution": 0.8,
-    "grid_cell_size_multiplier": 20.0
+    "grid_cell_size_multiplier": 10.0
   }
 }

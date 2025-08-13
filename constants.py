@@ -26,3 +26,6 @@ YELLOW = (255, 255, 0)
 
 # Window Title
 TITLE = "Particle Simulator"
+
+# Visual Effects
+TRAIL_EFFECT_COLOR = (0, 0, 0, 30) # RGBA. Alpha controls trail length (lower = longer).

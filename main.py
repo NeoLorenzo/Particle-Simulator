@@ -41,6 +41,9 @@ def main():
         bounds=(constants.WIDTH, constants.HEIGHT)
     )
 
+    # Create a surface for the fading trail effect, needs SRCALPHA for transparency
+    trail_surface = pygame.Surface((constants.WIDTH, constants.HEIGHT), pygame.SRCALPHA)
+
     # --- Main loop ---
     running = True
     tick = 0
@@ -131,7 +134,12 @@ def main():
             accumulated_integration_error = 0.0
 
         # --- Drawing ---
-        screen.fill(constants.BLACK)
+        # Instead of clearing the screen, fill our dedicated surface with a
+        # semi-transparent color and blit it to the main screen. This creates
+        # a fading trail effect for all moving objects.
+        trail_surface.fill(constants.TRAIL_EFFECT_COLOR)
+        screen.blit(trail_surface, (0, 0))
+
         particle_system.draw(screen)
 
         # Update the display
