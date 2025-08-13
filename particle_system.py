@@ -299,21 +299,24 @@ class ParticleSystem:
 
     def _check_boundary_collisions(self):
         """
-        Vectorized boundary collision check.
+        Vectorized boundary collision check. Reverses velocity for particles
+        outside the bounds but does not change their position, which preserves
+        system energy. This is an abstraction (Rule 8) that accepts minor
+        visual overlap to maintain a physically closed system.
         """
-        # Check left/right boundaries
+        # Identify particles that are beyond the boundaries
         left_mask = self.positions[:, 0] - self.radii.flatten() < 0
         right_mask = self.positions[:, 0] + self.radii.flatten() > self.bounds[0]
-        self.positions[left_mask, 0] = self.radii[left_mask].flatten()
-        self.positions[right_mask, 0] = self.bounds[0] - self.radii[right_mask].flatten()
-        self.velocities[left_mask | right_mask, 0] *= -1
-
-        # Check top/bottom boundaries
         top_mask = self.positions[:, 1] - self.radii.flatten() < 0
         bottom_mask = self.positions[:, 1] + self.radii.flatten() > self.bounds[1]
-        self.positions[top_mask, 1] = self.radii[top_mask].flatten()
-        self.positions[bottom_mask, 1] = self.bounds[1] - self.radii[bottom_mask].flatten()
-        self.velocities[top_mask | bottom_mask, 1] *= -1
+
+        # Reverse velocity only if the particle is moving towards the boundary
+        # This prevents particles that are moved by collision resolution from getting stuck
+        vx_mask = (left_mask & (self.velocities[:, 0] < 0)) | (right_mask & (self.velocities[:, 0] > 0))
+        vy_mask = (top_mask & (self.velocities[:, 1] < 0)) | (bottom_mask & (self.velocities[:, 1] > 0))
+
+        self.velocities[vx_mask, 0] *= -1
+        self.velocities[vy_mask, 1] *= -1
 
     def update(self):
         """

@@ -91,7 +91,7 @@ def main():
 
         # --- Logging (Rule 2.4, throttled) ---
         if tick % 100 == 0:
-            # --- BEGIN ENERGY CORRECTION (USER HYPOTHESIS) ---
+            # --- BEGIN ENERGY CORRECTION ---
             # This is a non-physical step to test forcing energy conservation.
             thermal_correction = -accumulated_integration_error
             particle_system.apply_global_temperature_correction(thermal_correction)
