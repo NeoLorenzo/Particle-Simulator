@@ -33,7 +33,19 @@ class ParticleSystem:
         self.temperatures = rng.uniform(config['min_temp'], config['max_temp'], (num_particles, 1))
         self.radii = np.sqrt(self.masses).astype(int)
 
+        # --- Spatial Grid Optimization ---
+        # Heuristic: Cell size should be at least as large as the largest possible particle's diameter
+        # to ensure any two colliding particles can be in adjacent cells.
+        max_radius = np.sqrt(config['max_mass']).astype(int)
+        self.cell_size = max_radius * 2
+        if self.cell_size == 0: # Avoid division by zero if masses are tiny
+            self.cell_size = 10 # A reasonable default
+        self.grid_width = int(np.ceil(self.bounds[0] / self.cell_size))
+        self.grid_height = int(np.ceil(self.bounds[1] / self.cell_size))
+        self.grid = [[] for _ in range(self.grid_width * self.grid_height)]
+
         logging.info(f"ParticleSystem created for {num_particles} particles.")
+        logging.info(f"Spatial grid initialized with cell size {self.cell_size} ({self.grid_width}x{self.grid_height} cells).")
 
     def _get_colors(self):
         """
@@ -100,46 +112,39 @@ class ParticleSystem:
 
     def _handle_collisions(self):
         """
-        Detects and resolves collisions between all pairs of particles.
-        This is a partially vectorized implementation. The pair-finding is still
-        a loop, but the calculations are NumPy-based.
+        Detects and resolves collisions using a spatial grid to optimize pair finding.
+        This avoids the O(n^2) check of all possible pairs by only checking
+        particles in the same or adjacent grid cells.
         """
-        # This part is still O(n^2) but difficult to fully vectorize due to the
-        # sparse and conditional nature of collisions. Future optimizations could
-        # use spatial hashing (e.g., a grid) to reduce pair checks.
-        for i in range(self.num_particles):
-            for j in range(i + 1, self.num_particles):
-                pos_i, pos_j = self.positions[i], self.positions[j]
-                rad_i, rad_j = self.radii[i][0], self.radii[j][0]
+        self._build_spatial_grid()
 
-                distance_vec = pos_j - pos_i
-                distance = np.linalg.norm(distance_vec)
-                min_distance = rad_i + rad_j
+        for cell_idx, cell in enumerate(self.grid):
+            cell_x = cell_idx % self.grid_width
+            cell_y = cell_idx // self.grid_width
 
-                if distance < min_distance:
-                    # --- Collision Detected ---
-                    # 1. Resolve overlap
-                    overlap = min_distance - distance
-                    correction = 0.5 * overlap * (distance_vec / distance)
-                    self.positions[i] -= correction
-                    self.positions[j] += correction
+            # 1. Check for collisions within the cell itself
+            for i in range(len(cell)):
+                for j in range(i + 1, len(cell)):
+                    self._resolve_collision(cell[i], cell[j])
 
-                    # 2. Heat Transfer
-                    t1_before, t2_before = self.temperatures[i], self.temperatures[j]
-                    temp_diff = t1_before - t2_before
-                    heat_transfer = self.config['heat_transfer_coefficient'] * temp_diff
-                    self.temperatures[i] -= heat_transfer / self.masses[i]
-                    self.temperatures[j] += heat_transfer / self.masses[j]
-                    logging.debug(f"Collision heat transfer: T1_before={t1_before[0]:.2f} T2_before={t2_before[0]:.2f} -> T1_after={self.temperatures[i][0]:.2f} T2_after={self.temperatures[j][0]:.2f}")
+            # 2. Check for collisions with 4 neighboring cells to avoid double-counting pairs.
+            # This pattern ensures each pair of adjacent cells is checked only once.
+            neighbor_indices = []
+            # Neighbor to the right
+            if cell_x < self.grid_width - 1:
+                neighbor_indices.append(cell_idx + 1)
+            # Neighbor below
+            if cell_y < self.grid_height - 1:
+                neighbor_indices.append(cell_idx + self.grid_width)
+            # Neighbor to the bottom-left
+            if cell_x > 0 and cell_y < self.grid_height - 1:
+                neighbor_indices.append(cell_idx + self.grid_width - 1)
+            # Neighbor to the bottom-right
+            if cell_x < self.grid_width - 1 and cell_y < self.grid_height - 1:
+                neighbor_indices.append(cell_idx + self.grid_width + 1)
 
-                    # 3. Elastic Collision Response
-                    normal = distance_vec / distance
-                    v_rel = self.velocities[j] - self.velocities[i]
-                    m_i, m_j = self.masses[i], self.masses[j]
-                    impulse_j = (-2 * m_i * m_j * np.dot(v_rel, normal)) / (m_i + m_j)
-
-                    self.velocities[i] -= (impulse_j / m_i) * normal
-                    self.velocities[j] += (impulse_j / m_j) * normal
+            for neighbor_idx in neighbor_indices:
+                self._check_cell_pairs(cell, self.grid[neighbor_idx])
 
     def _check_boundary_collisions(self):
         """
@@ -184,3 +189,74 @@ class ParticleSystem:
                 self.positions[i].astype(int),
                 self.radii[i][0]
             )
+
+    def _build_spatial_grid(self):
+        """
+        Populates a spatial grid to accelerate collision detection.
+
+        Assigns each particle to a grid cell based on its position. This is an
+        O(n) operation that allows subsequent neighbor searches to be much faster
+        than the naive O(n^2) approach.
+        """
+        # Clear the grid for the new frame
+        for cell in self.grid:
+            cell.clear()
+
+        # Place particle indices into grid cells
+        for i in range(self.num_particles):
+            pos = self.positions[i]
+            cell_x = int(pos[0] / self.cell_size)
+            cell_y = int(pos[1] / self.cell_size)
+
+            # Clamp values to be within grid bounds
+            cell_x = max(0, min(cell_x, self.grid_width - 1))
+            cell_y = max(0, min(cell_y, self.grid_height - 1))
+
+            grid_index = cell_y * self.grid_width + cell_x
+            self.grid[grid_index].append(i)
+
+    def _check_cell_pairs(self, cell1: list, cell2: list):
+        """Helper to check all particle pairs between two cells."""
+        for p1_index in cell1:
+            for p2_index in cell2:
+                self._resolve_collision(p1_index, p2_index)
+
+    def _resolve_collision(self, i: int, j: int):
+        """
+        Checks and resolves a potential collision between two particles, i and j.
+        This contains the original collision logic, now called from the new grid system.
+        """
+        pos_i, pos_j = self.positions[i], self.positions[j]
+        rad_i, rad_j = self.radii[i][0], self.radii[j][0]
+
+        distance_vec = pos_j - pos_i
+        # Use squared distance for the initial check to avoid an expensive sqrt
+        distance_sq = np.sum(distance_vec**2)
+        min_distance = rad_i + rad_j
+
+        if distance_sq < min_distance**2 and distance_sq > 0:
+            distance = np.sqrt(distance_sq) # Only calculate sqrt when a collision is likely
+            # --- Collision Detected ---
+            # 1. Resolve overlap
+            overlap = min_distance - distance
+            correction = 0.5 * overlap * (distance_vec / distance)
+            self.positions[i] -= correction
+            self.positions[j] += correction
+
+            # 2. Heat Transfer
+            t1_before, t2_before = self.temperatures[i], self.temperatures[j]
+            temp_diff = t1_before - t2_before
+            heat_transfer = self.config['heat_transfer_coefficient'] * temp_diff
+            self.temperatures[i] -= heat_transfer / self.masses[i]
+            self.temperatures[j] += heat_transfer / self.masses[j]
+            # The following log is throttled by commenting out, per Rule 2.4, as it's in a hot loop.
+            # logging.debug(f"Collision heat transfer: T1_before={t1_before[0]:.2f} T2_before={t2_before[0]:.2f} -> T1_after={self.temperatures[i][0]:.2f} T2_after={self.temperatures[j][0]:.2f}")
+
+            # 3. Elastic Collision Response
+            normal = distance_vec / distance
+            v_rel = self.velocities[j] - self.velocities[i]
+            m_i, m_j = self.masses[i], self.masses[j]
+            impulse_j = (-2 * m_i * m_j * np.dot(v_rel, normal)) / (m_i + m_j)
+
+            self.velocities[i] -= (impulse_j / m_i) * normal
+            self.velocities[j] += (impulse_j / m_j) * normal
