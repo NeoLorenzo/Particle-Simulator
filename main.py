@@ -17,6 +17,7 @@ def main():
 
     with open('config.json', 'r') as f:
         config = json.load(f)
+    sim_config = config['simulation']
 
     logging.info("Application starting...")
     logging.info(f"Loaded configuration: {config}")
@@ -31,15 +32,18 @@ def main():
     pygame.display.set_caption(constants.TITLE)
     clock = pygame.time.Clock()
 
-    # Create a single particle for testing
-    particles = [
-        Particle(
-            mass=100.0,
-            temperature=300.0,
-            position=rng.random(2) * np.array([constants.WIDTH, constants.HEIGHT]),
-            velocity=rng.random(2) * 2 - 1 # Random velocity between -1 and 1
+    # Create a list of particles
+    particles = []
+    for _ in range(sim_config['particle_count']):
+        mass = rng.uniform(sim_config['min_mass'], sim_config['max_mass'])
+        particles.append(
+            Particle(
+                mass=mass,
+                temperature=300.0, # Static for now
+                position=rng.random(2) * np.array([constants.WIDTH, constants.HEIGHT]),
+                velocity=np.zeros(2, dtype=float) # Start at rest
+            )
         )
-    ]
 
     # --- Main loop ---
     running = True
@@ -49,11 +53,38 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
-        # Logic Update
+        # --- Physics Update ---
+        # Reset acceleration for all particles
+        for p in particles:
+            p.acceleration = np.zeros(2, dtype=float)
+
+        # Calculate gravitational forces (O(n^2) complexity)
+        for i in range(len(particles)):
+            for j in range(i + 1, len(particles)):
+                p1 = particles[i]
+                p2 = particles[j]
+
+                # Vector from p1 to p2
+                direction_vec = p2.position - p1.position
+                distance_sq = np.sum(direction_vec**2)
+
+                # Abstraction (Rule 8): Add a softening factor to prevent extreme forces
+                # at very close distances. This avoids division by zero and instability.
+                distance_sq += sim_config['softening_factor']
+
+                # Force calculation: F = G * (m1*m2) / r^2
+                force_magnitude = (sim_config['gravity_constant'] * p1.mass * p2.mass) / distance_sq
+                force_vector = force_magnitude * direction_vec / np.sqrt(distance_sq)
+
+                # Apply force to particles (a = F/m)
+                p1.acceleration += force_vector / p1.mass
+                p2.acceleration -= force_vector / p2.mass
+
+        # --- Logic Update ---
         for p in particles:
             p.update()
 
-        # Drawing
+        # --- Drawing ---
         screen.fill(constants.BLACK)
         for p in particles:
             p.draw(screen)
