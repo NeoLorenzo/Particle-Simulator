@@ -83,6 +83,7 @@ def main():
         # --- Logic Update ---
         for p in particles:
             p.update()
+            p.check_boundary_collision(constants.WIDTH, constants.HEIGHT)
 
         # --- Drawing ---
         screen.fill(constants.BLACK)

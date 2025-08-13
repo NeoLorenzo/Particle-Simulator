@@ -39,6 +39,33 @@ class Particle:
         self.velocity += self.acceleration
         self.position += self.velocity
 
+    def check_boundary_collision(self, width: int, height: int):
+        """
+        Checks for and handles collisions with the screen boundaries.
+        Reverses velocity and nudges particle back into bounds if a collision occurs.
+
+        - Inputs:
+            - width (int): The width of the simulation area.
+            - height (int): The height of the simulation area.
+        """
+        # Left boundary
+        if self.position[0] - self.radius < 0:
+            self.position[0] = self.radius
+            self.velocity[0] *= -1
+        # Right boundary
+        elif self.position[0] + self.radius > width:
+            self.position[0] = width - self.radius
+            self.velocity[0] *= -1
+
+        # Top boundary
+        if self.position[1] - self.radius < 0:
+            self.position[1] = self.radius
+            self.velocity[1] *= -1
+        # Bottom boundary
+        elif self.position[1] + self.radius > height:
+            self.position[1] = height - self.radius
+            self.velocity[1] *= -1
+
     def draw(self, screen: pygame.Surface):
         """
         Draws the particle on the screen.
