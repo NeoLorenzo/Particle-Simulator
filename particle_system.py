@@ -286,29 +286,32 @@ class ParticleSystem:
 
     def update(self):
         """
-        Runs a full physics update step using Velocity Verlet integration.
-        This method conserves energy better than simple Euler integration.
+        Runs a full physics update step using a corrected sequence to ensure energy conservation.
+        First, the continuous forces (gravity) are integrated using Velocity Verlet.
+        Second, discrete events (collisions, boundaries) are handled.
         """
-        # 1. Update positions using current velocity and acceleration (t).
-        # This is the first half of Velocity Verlet: p(t+dt) = p(t) + v(t)dt + 0.5a(t)dt^2
-        # We assume dt=1 tick, so dt and dt^2 are both 1.
-        self.positions += self.velocities + 0.5 * self.accelerations
+        # --- 1. Continuous Force Integration (Velocity Verlet) ---
 
-        # 2. Store the acceleration from the previous step (t) before recalculating.
+        # p(t+dt) = p(t) + v(t)dt + 0.5a(t)dt^2
+        # We assume dt=1, so we omit it.
+        self.positions += self.velocities + 0.5 * self.accelerations
         old_accelerations = np.copy(self.accelerations)
 
-        # 3. Build the spatial grid with the new positions to find new neighbors.
-        self._build_spatial_grid()
+        # Calculate new forces/accelerations a(t+dt) based on new positions
+        self._calculate_gravity()
 
-        # 4. Calculate new forces based on new positions to get acceleration (t+1).
-        self._calculate_gravity() # This resets and calculates new accelerations.
-        self._handle_collisions() # This can also modify accelerations.
-
-        # 5. Update velocities using the average of old and new accelerations.
-        # This is the second half of Velocity Verlet: v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt)) * dt
+        # v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt)) * dt
         self.velocities += 0.5 * (old_accelerations + self.accelerations)
 
-        # 6. Handle interactions with the simulation boundaries after all movement.
+        # --- 2. Discrete Event Handling ---
+
+        # Build the spatial grid based on the final positions for this tick
+        self._build_spatial_grid()
+
+        # Handle collisions, which modifies velocities and positions based on discrete events
+        self._handle_collisions()
+
+        # Handle boundary interactions as the final step
         self._check_boundary_collisions()
 
     def draw(self, screen: pygame.Surface):
