@@ -257,21 +257,29 @@ class ParticleSystem:
 
     def update(self):
         """
-        Runs a full physics update step for the entire system.
-        The order is optimized to build the spatial grid once and reuse it.
+        Runs a full physics update step using Velocity Verlet integration.
+        This method conserves energy better than simple Euler integration.
         """
-        # 1. Build the spatial grid to accelerate neighbor-finding.
+        # 1. Update positions using current velocity and acceleration (t).
+        # This is the first half of Velocity Verlet: p(t+dt) = p(t) + v(t)dt + 0.5a(t)dt^2
+        # We assume dt=1 tick, so dt and dt^2 are both 1.
+        self.positions += self.velocities + 0.5 * self.accelerations
+
+        # 2. Store the acceleration from the previous step (t) before recalculating.
+        old_accelerations = np.copy(self.accelerations)
+
+        # 3. Build the spatial grid with the new positions to find new neighbors.
         self._build_spatial_grid()
 
-        # 2. Calculate forces.
-        self._calculate_gravity() # Uses the pre-built grid.
-        self._handle_collisions() # Uses the pre-built grid.
+        # 4. Calculate new forces based on new positions to get acceleration (t+1).
+        self._calculate_gravity() # This resets and calculates new accelerations.
+        self._handle_collisions() # This can also modify accelerations.
 
-        # 3. Update velocities and positions (Euler integration).
-        self.velocities += self.accelerations
-        self.positions += self.velocities
+        # 5. Update velocities using the average of old and new accelerations.
+        # This is the second half of Velocity Verlet: v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt)) * dt
+        self.velocities += 0.5 * (old_accelerations + self.accelerations)
 
-        # 4. Handle interactions with the simulation boundaries.
+        # 6. Handle interactions with the simulation boundaries after all movement.
         self._check_boundary_collisions()
 
     def draw(self, screen: pygame.Surface):
@@ -311,3 +319,14 @@ class ParticleSystem:
 
             grid_index = cell_y * self.grid_width + cell_x
             self.grid[grid_index].append(i)
+
+    def get_total_kinetic_energy(self):
+        """
+        Calculates the total kinetic energy of the system.
+        KE = sum(0.5 * m * v^2)
+        """
+        # For a 2D velocity vector v = (vx, vy), v^2 = vx^2 + vy^2.
+        # np.sum(axis=1) calculates this for each particle.
+        vel_sq = np.sum(self.velocities**2, axis=1, keepdims=True)
+        kinetic_energy = 0.5 * self.masses * vel_sq
+        return np.sum(kinetic_energy)

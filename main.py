@@ -43,6 +43,7 @@ def main():
 
     # --- Main loop ---
     running = True
+    tick = 0
     while running:
         # Event handling
         for event in pygame.event.get():
@@ -53,6 +54,12 @@ def main():
         # All complex logic is now encapsulated in the ParticleSystem
         particle_system.update()
 
+        # --- Logging (Rule 2.4, throttled) ---
+        if tick % 100 == 0:
+            ke = particle_system.get_total_kinetic_energy()
+            # Using DEBUG level for dense trace info (Rule 2.5)
+            logger.debug(f"Tick={tick}, TotalKineticEnergy={ke:.2f}")
+
         # --- Drawing ---
         screen.fill(constants.BLACK)
         particle_system.draw(screen)
@@ -62,6 +69,8 @@ def main():
 
         # Cap the frame rate
         clock.tick(constants.FPS)
+
+        tick += 1
 
     logger.info("Application shutting down.")
     pygame.quit()
