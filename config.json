@@ -1,0 +1,8 @@
+{
+  "run_id": "sim_run_001",
+  "master_seed": 42,
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(levelname)s - %(message)s"
+  }
+}

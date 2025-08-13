@@ -2,11 +2,25 @@
 
 import pygame
 import constants
+import json
+import logging
+import logger_setup
 
 def main():
     """
     Main function to initialize and run the particle simulation.
     """
+    # --- Setup ---
+    # Load configuration and initialize logging first
+    logger_setup.setup_logging()
+
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+
+    logging.info("Application starting...")
+    logging.info(f"Loaded configuration: {config}")
+
+    # --- Initialization ---
     pygame.init()
 
     # Set up the display
@@ -14,7 +28,7 @@ def main():
     pygame.display.set_caption(constants.TITLE)
     clock = pygame.time.Clock()
 
-    # Main loop
+    # --- Main loop ---
     running = True
     while running:
         # Event handling
@@ -31,6 +45,7 @@ def main():
         # Cap the frame rate
         clock.tick(constants.FPS)
 
+    logging.info("Application shutting down.")
     pygame.quit()
 
 if __name__ == "__main__":
