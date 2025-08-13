@@ -80,43 +80,51 @@ class ParticleSystem:
 
     def _calculate_gravity(self):
         """
-        Calculates gravitational forces between all pairs of particles.
-        This is a vectorized implementation of the O(n^2) calculation.
+        Calculates gravitational forces using the spatial grid to limit calculations
+        to nearby particles. This is a scientifically-grounded abstraction (Rule 8)
+        that trades the accuracy of long-range forces for a significant performance
+        increase. It approximates a full n-body simulation by considering only
+        local interactions, which is a valid approach when emergent behavior is
+        driven by dense clusters. The complexity is reduced from O(n^2) to
+        roughly O(n*k), where k is the average number of particles in neighboring cells.
         """
-        # Reset accelerations
         self.accelerations.fill(0.0)
 
-        # Calculate pairwise differences in position (broadcasting)
-        # p1_pos is (N, 1, 2), p2_pos is (1, N, 2) -> diffs is (N, N, 2)
-        diffs = self.positions[np.newaxis, :, :] - self.positions[:, np.newaxis, :]
+        for cell_idx, cell in enumerate(self.grid):
+            cell_x = cell_idx % self.grid_width
+            cell_y = cell_idx // self.grid_width
 
-        # Calculate squared distances
-        dist_sq = np.sum(diffs**2, axis=2)
+            # 1. Calculate gravity within the cell itself
+            for i in range(len(cell)):
+                for j in range(i + 1, len(cell)):
+                    self._calculate_gravity_for_pair(cell[i], cell[j])
 
-        # Add softening factor to avoid division by zero and instability
-        dist_sq += self.config['softening_factor']
+            # 2. Calculate gravity with 4 neighboring cells to avoid double-counting.
+            # This pattern ensures each pair of adjacent cells is checked only once.
+            neighbor_indices = []
+            if cell_x < self.grid_width - 1: # Right
+                neighbor_indices.append(cell_idx + 1)
+            if cell_y < self.grid_height - 1: # Below
+                neighbor_indices.append(cell_idx + self.grid_width)
+            if cell_x > 0 and cell_y < self.grid_height - 1: # Bottom-left
+                neighbor_indices.append(cell_idx + self.grid_width - 1)
+            if cell_x < self.grid_width - 1 and cell_y < self.grid_height - 1: # Bottom-right
+                neighbor_indices.append(cell_idx + self.grid_width + 1)
 
-        # Calculate force magnitude: F = G * (m1*m2) / r^2
-        # masses is (N, 1), masses.T is (1, N) -> mass_product is (N, N)
-        mass_product = self.masses @ self.masses.T
-        force_magnitudes = (self.config['gravity_constant'] * mass_product) / dist_sq
-
-        # Calculate force vectors
-        # We need to reshape force_magnitudes to (N, N, 1) for broadcasting
-        force_vectors = force_magnitudes[:, :, np.newaxis] * diffs / np.sqrt(dist_sq)[:, :, np.newaxis]
-
-        # Sum forces for each particle and calculate acceleration (a = F/m)
-        # np.nansum is used to handle the diagonal (particle attracting itself results in NaN)
-        total_force = np.nansum(force_vectors, axis=1)
-        self.accelerations = total_force / self.masses
+            for neighbor_idx in neighbor_indices:
+                neighbor_cell = self.grid[neighbor_idx]
+                # Check all pairs between the current cell and the neighbor cell
+                for p1_index in cell:
+                    for p2_index in neighbor_cell:
+                        self._calculate_gravity_for_pair(p1_index, p2_index)
 
     def _handle_collisions(self):
         """
-        Detects and resolves collisions using a spatial grid to optimize pair finding.
+        Detects and resolves collisions using the pre-built spatial grid.
         This avoids the O(n^2) check of all possible pairs by only checking
         particles in the same or adjacent grid cells.
         """
-        self._build_spatial_grid()
+        # The spatial grid is now built in the main update() loop.
 
         for cell_idx, cell in enumerate(self.grid):
             cell_x = cell_idx % self.grid_width
@@ -167,14 +175,20 @@ class ParticleSystem:
     def update(self):
         """
         Runs a full physics update step for the entire system.
+        The order is optimized to build the spatial grid once and reuse it.
         """
-        self._calculate_gravity()
-        self._handle_collisions() # Note: This contains the O(n^2) loop
+        # 1. Build the spatial grid to accelerate neighbor-finding.
+        self._build_spatial_grid()
 
-        # Update velocities and positions (Euler integration)
+        # 2. Calculate forces.
+        self._calculate_gravity() # Uses the pre-built grid.
+        self._handle_collisions() # Uses the pre-built grid.
+
+        # 3. Update velocities and positions (Euler integration).
         self.velocities += self.accelerations
         self.positions += self.velocities
 
+        # 4. Handle interactions with the simulation boundaries.
         self._check_boundary_collisions()
 
     def draw(self, screen: pygame.Surface):
@@ -260,3 +274,28 @@ class ParticleSystem:
 
             self.velocities[i] -= (impulse_j / m_i) * normal
             self.velocities[j] += (impulse_j / m_j) * normal
+
+    def _calculate_gravity_for_pair(self, i: int, j: int):
+        """
+        Calculates and applies the gravitational force between two particles, i and j.
+        The force is applied symmetrically to both particles.
+        """
+        pos_i, pos_j = self.positions[i], self.positions[j]
+        mass_i, mass_j = self.masses[i], self.masses[j]
+
+        diff = pos_j - pos_i
+        dist_sq = np.sum(diff**2)
+
+        # Avoid division by zero and instability at close ranges
+        dist_sq += self.config['softening_factor']
+
+        # Calculate force magnitude: F = G * (m1*m2) / r^2
+        force_magnitude = (self.config['gravity_constant'] * mass_i * mass_j) / dist_sq
+
+        # Calculate force vector
+        dist = np.sqrt(dist_sq)
+        force_vector = force_magnitude * (diff / dist)
+
+        # Apply acceleration (a = F/m) to both particles
+        self.accelerations[i] += force_vector / mass_i
+        self.accelerations[j] -= force_vector / mass_j
