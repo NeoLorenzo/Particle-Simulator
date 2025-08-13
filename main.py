@@ -117,8 +117,6 @@ def main():
                     # Change in temp = heat_energy / mass (simplified)
                     p1.temperature -= heat_transfer / p1.mass
                     p2.temperature += heat_transfer / p2.mass
-                    
-                    logging.debug(f"Collision heat transfer: T1_before={t1_before:.2f} T2_before={t2_before:.2f} -> T1_after={p1.temperature:.2f} T2_after={p2.temperature:.2f}")
 
                     # 3. Calculate elastic collision response (2D)
                     # Source: https://en.wikipedia.org/wiki/Elastic_collision#Two-dimensional_collision_with_two_moving_objects
