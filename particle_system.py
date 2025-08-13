@@ -338,6 +338,11 @@ class ParticleSystem:
         self.positions += self.velocities + 0.5 * self.accelerations
         old_accelerations = np.copy(self.accelerations)
 
+        # --- Rebuild Grid BEFORE Force/Collision Calculations ---
+        # The grid MUST be updated with the new positions before we use it
+        # to calculate gravity or collisions. This is the critical fix.
+        self._build_spatial_grid()
+
         # Calculate new forces/accelerations a(t+dt) based on new positions
         self._calculate_gravity()
 
@@ -346,10 +351,8 @@ class ParticleSystem:
 
         # --- 2. Discrete Event Handling ---
 
-        # Build the spatial grid based on the final positions for this tick
-        self._build_spatial_grid()
-
-        # Handle collisions, which modifies velocities and positions based on discrete events
+        # Handle collisions, which modifies velocities and positions based on discrete events.
+        # The grid is already up-to-date from the step above.
         self._handle_collisions()
 
         # Handle boundary interactions as the final step
@@ -436,24 +439,26 @@ class ParticleSystem:
                         cell[i], cell[j], self.positions, self.masses, g_const, softening
                     )
 
-            # 2. PE with 4 neighboring cells
-            neighbor_indices = []
-            if cell_x < self.grid_width - 1: # Right
-                neighbor_indices.append(cell_idx + 1)
-            if cell_y < self.grid_height - 1: # Below
-                neighbor_indices.append(cell_idx + self.grid_width)
-            if cell_x > 0 and cell_y < self.grid_height - 1: # Bottom-left
-                neighbor_indices.append(cell_idx + self.grid_width - 1)
-            if cell_x < self.grid_width - 1 and cell_y < self.grid_height - 1: # Bottom-right
-                neighbor_indices.append(cell_idx + self.grid_width + 1)
+            # 2. PE with all 8 neighboring cells, using the same symmetric check as gravity.
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue # Skip the cell itself
 
-            for neighbor_idx in neighbor_indices:
-                neighbor_cell = self.grid[neighbor_idx]
-                for p1_index in cell:
-                    for p2_index in neighbor_cell:
-                        total_pe += _calculate_potential_energy_for_pair_jit(
-                            p1_index, p2_index, self.positions, self.masses, g_const, softening
-                        )
+                    neighbor_x, neighbor_y = cell_x + dx, cell_y + dy
+
+                    if 0 <= neighbor_x < self.grid_width and 0 <= neighbor_y < self.grid_height:
+                        neighbor_idx = neighbor_y * self.grid_width + neighbor_x
+                        neighbor_cell = self.grid[neighbor_idx]
+
+                        # Avoid double-counting by only checking pairs where p1_index < p2_index
+                        for p1_index in cell:
+                            for p2_index in neighbor_cell:
+                                if p1_index < p2_index:
+                                    total_pe += _calculate_potential_energy_for_pair_jit(
+                                        p1_index, p2_index, self.positions, self.masses, g_const, softening
+                                    )
+
         return total_pe
 
     def apply_global_temperature_correction(self, energy_change: float):
