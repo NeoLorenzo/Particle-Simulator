@@ -36,6 +36,20 @@ def _calculate_gravity_for_pair_jit(i, j, positions, masses, accelerations, g_co
     accelerations[j] -= force_vector / mass_j
 
 @numba.jit(nopython=True)
+def _calculate_potential_energy_for_pair_jit(i, j, positions, masses, g_const, softening):
+    """Calculates the softened gravitational potential energy for a single pair."""
+    pos_i, pos_j = positions[i], positions[j]
+    mass_i, mass_j = masses[i][0], masses[j][0]
+
+    diff = pos_j - pos_i
+    dist_sq = np.sum(diff**2)
+
+    # Potential energy U = -G * (m1*m2) / r
+    # We use the softened distance sqrt(dist_sq + softening) to match the force calculation
+    potential = (-g_const * mass_i * mass_j) / np.sqrt(dist_sq + softening)
+    return potential
+
+@numba.jit(nopython=True)
 def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatures, heat_coeff, restitution):
     """
     Numba-accelerated inelastic collision and energy conversion for a single pair.
@@ -82,7 +96,9 @@ def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatu
         # We distribute this new heat between the two particles.
         # A simple 50/50 split is a reasonable starting abstraction.
         if ke_lost > 0:
-            heat_generated = ke_lost * heat_coeff # Use coeff to scale conversion
+            # BUG FIX: 100% of lost kinetic energy must be converted to heat.
+            # The heat_coeff is not a conversion efficiency.
+            heat_generated = ke_lost
             temperatures[i][0] += (heat_generated * 0.5) / m_i
             temperatures[j][0] += (heat_generated * 0.5) / m_j
 
@@ -352,3 +368,46 @@ class ParticleSystem:
         """
         # E_thermal = sum(mass * temperature)
         return np.sum(self.masses * self.temperatures)
+
+    def get_total_potential_energy(self):
+        """
+        Calculates the total gravitational potential energy of the system based on the
+        same spatial grid approximation used for force calculations. This ensures
+        consistency between the force and energy models.
+        """
+        g_const = self.config['gravity_constant']
+        softening = self.config['softening_factor']
+        total_pe = 0.0
+
+        # This loop structure mirrors _calculate_gravity to ensure we sum the PE
+        # for the exact same set of interacting pairs.
+        for cell_idx, cell in enumerate(self.grid):
+            cell_x = cell_idx % self.grid_width
+            cell_y = cell_idx // self.grid_width
+
+            # 1. PE within the cell itself
+            for i in range(len(cell)):
+                for j in range(i + 1, len(cell)):
+                    total_pe += _calculate_potential_energy_for_pair_jit(
+                        cell[i], cell[j], self.positions, self.masses, g_const, softening
+                    )
+
+            # 2. PE with 4 neighboring cells
+            neighbor_indices = []
+            if cell_x < self.grid_width - 1: # Right
+                neighbor_indices.append(cell_idx + 1)
+            if cell_y < self.grid_height - 1: # Below
+                neighbor_indices.append(cell_idx + self.grid_width)
+            if cell_x > 0 and cell_y < self.grid_height - 1: # Bottom-left
+                neighbor_indices.append(cell_idx + self.grid_width - 1)
+            if cell_x < self.grid_width - 1 and cell_y < self.grid_height - 1: # Bottom-right
+                neighbor_indices.append(cell_idx + self.grid_width + 1)
+
+            for neighbor_idx in neighbor_indices:
+                neighbor_cell = self.grid[neighbor_idx]
+                for p1_index in cell:
+                    for p2_index in neighbor_cell:
+                        total_pe += _calculate_potential_energy_for_pair_jit(
+                            p1_index, p2_index, self.positions, self.masses, g_const, softening
+                        )
+        return total_pe

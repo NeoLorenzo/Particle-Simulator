@@ -54,16 +54,18 @@ def main():
         # All complex logic is now encapsulated in the ParticleSystem
         particle_system.update()
 
-        # --- Logging (Rule 2.4, throttled) ---
+                # --- Logging (Rule 2.4, throttled) ---
         if tick % 100 == 0:
             ke = particle_system.get_total_kinetic_energy()
             te = particle_system.get_total_thermal_energy()
-            total_energy = ke + te
+            pe = particle_system.get_total_potential_energy()
+            total_energy = ke + te + pe
             # Using DEBUG level for dense trace info (Rule 2.5)
             logger.debug(
                 f"Tick={tick}, "
-                f"TotalKineticEnergy={ke:.2f}, "
-                f"TotalThermalEnergy={te:.2f}, "
+                f"Kinetic={ke:.2f}, "
+                f"Thermal={te:.2f}, "
+                f"Potential={pe:.2f}, "
                 f"TotalSystemEnergy={total_energy:.2f}"
             )
 
