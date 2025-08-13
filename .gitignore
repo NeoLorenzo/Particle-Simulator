@@ -1,14 +1,45 @@
-# Python virtual environment
-    venv/
-    
-    # Python cache
-    __pycache__/
-    *.pyc
-    
-    # IDE and editor folders
-    .vscode/
-    .idea/
-    
-    # Runtime files
-    /profiles/
-    /runs/
+# .gitignore
+
+# Python
+###################
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE / Editor specific
+.vscode/
+.idea/
+
+# Simulation Output
+###################
+runs/
