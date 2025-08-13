@@ -6,7 +6,7 @@
     "format": "%(asctime)s - %(levelname)s - %(message)s"
   },
   "simulation": {
-    "particle_count": 50,
+    "particle_count": 500,
     "min_mass": 50.0,
     "max_mass": 100.0,
     "gravity_constant": 0.3,
