@@ -57,8 +57,15 @@ def main():
         # --- Logging (Rule 2.4, throttled) ---
         if tick % 100 == 0:
             ke = particle_system.get_total_kinetic_energy()
+            te = particle_system.get_total_thermal_energy()
+            total_energy = ke + te
             # Using DEBUG level for dense trace info (Rule 2.5)
-            logger.debug(f"Tick={tick}, TotalKineticEnergy={ke:.2f}")
+            logger.debug(
+                f"Tick={tick}, "
+                f"TotalKineticEnergy={ke:.2f}, "
+                f"TotalThermalEnergy={te:.2f}, "
+                f"TotalSystemEnergy={total_energy:.2f}"
+            )
 
         # --- Drawing ---
         screen.fill(constants.BLACK)

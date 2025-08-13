@@ -36,9 +36,9 @@ def _calculate_gravity_for_pair_jit(i, j, positions, masses, accelerations, g_co
     accelerations[j] -= force_vector / mass_j
 
 @numba.jit(nopython=True)
-def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatures, heat_coeff):
+def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatures, heat_coeff, restitution):
     """
-    Numba-accelerated collision and heat transfer calculation for a single pair.
+    Numba-accelerated inelastic collision and energy conversion for a single pair.
     Modifies positions, velocities, and temperatures in place.
     """
     pos_i, pos_j = positions[i], positions[j]
@@ -50,29 +50,41 @@ def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatu
 
     if distance_sq < min_distance**2 and distance_sq > 0:
         distance = np.sqrt(distance_sq)
+        m_i, m_j = masses[i][0], masses[j][0]
+
+        # --- Store pre-collision state for energy calculation ---
+        v_i_before = velocities[i].copy()
+        v_j_before = velocities[j].copy()
+        ke_before = 0.5 * m_i * np.sum(v_i_before**2) + 0.5 * m_j * np.sum(v_j_before**2)
+
         # 1. Resolve overlap
         overlap = min_distance - distance
         correction = 0.5 * overlap * (distance_vec / distance)
         positions[i] -= correction
         positions[j] += correction
 
-        # 2. Heat Transfer
-        t1_before, t2_before = temperatures[i][0], temperatures[j][0]
-        temp_diff = t1_before - t2_before
-        heat_transfer = heat_coeff * temp_diff
-        temperatures[i][0] -= heat_transfer / masses[i][0]
-        temperatures[j][0] += heat_transfer / masses[j][0]
-
-        # 3. Elastic Collision Response
+        # 2. Inelastic Collision Response
         normal = distance_vec / distance
-        v_rel = velocities[j] - velocities[i]
-        m_i, m_j = masses[i][0], masses[j][0]
-        # Note: Numba requires explicit dot product for 1D arrays
+        v_rel = v_j_before - v_i_before
         v_rel_dot_normal = v_rel[0] * normal[0] + v_rel[1] * normal[1]
-        impulse_j = (-2 * m_i * m_j * v_rel_dot_normal) / (m_i + m_j)
+
+        # Impulse formula now includes the coefficient of restitution
+        impulse_j = (-(1 + restitution) * m_i * m_j * v_rel_dot_normal) / (m_i + m_j)
 
         velocities[i] -= (impulse_j / m_i) * normal
         velocities[j] += (impulse_j / m_j) * normal
+
+        # 3. Convert Lost Kinetic Energy to Thermal Energy
+        ke_after = 0.5 * m_i * np.sum(velocities[i]**2) + 0.5 * m_j * np.sum(velocities[j]**2)
+        ke_lost = ke_before - ke_after
+
+        # The lost kinetic energy is converted to heat.
+        # We distribute this new heat between the two particles.
+        # A simple 50/50 split is a reasonable starting abstraction.
+        if ke_lost > 0:
+            heat_generated = ke_lost * heat_coeff # Use coeff to scale conversion
+            temperatures[i][0] += (heat_generated * 0.5) / m_i
+            temperatures[j][0] += (heat_generated * 0.5) / m_j
 
 
 class ParticleSystem:
@@ -95,6 +107,7 @@ class ParticleSystem:
         self.num_particles = num_particles
         self.config = config
         self.bounds = np.array(bounds)
+        self.restitution = config['coefficient_of_restitution']
 
         # --- Initialize properties using NumPy arrays (Structure of Arrays) ---
         self.positions = rng.random((num_particles, 2)) * self.bounds
@@ -214,7 +227,7 @@ class ParticleSystem:
                 for j in range(i + 1, len(cell)):
                     _resolve_collision_jit(
                         cell[i], cell[j], self.positions, self.velocities,
-                        self.masses, self.radii, self.temperatures, heat_coeff
+                        self.masses, self.radii, self.temperatures, heat_coeff, self.restitution
                     )
 
             # 2. Check for collisions with 4 neighboring cells to avoid double-counting pairs.
@@ -234,7 +247,7 @@ class ParticleSystem:
                     for p2_index in neighbor_cell:
                         _resolve_collision_jit(
                             p1_index, p2_index, self.positions, self.velocities,
-                            self.masses, self.radii, self.temperatures, heat_coeff
+                            self.masses, self.radii, self.temperatures, heat_coeff, self.restitution
                         )
 
     def _check_boundary_collisions(self):
@@ -330,3 +343,12 @@ class ParticleSystem:
         vel_sq = np.sum(self.velocities**2, axis=1, keepdims=True)
         kinetic_energy = 0.5 * self.masses * vel_sq
         return np.sum(kinetic_energy)
+
+    def get_total_thermal_energy(self):
+        """
+        Calculates the total thermal energy of the system.
+        Assumes thermal energy is proportional to temperature * mass.
+        This is an abstraction; in reality it depends on specific heat capacity.
+        """
+        # E_thermal = sum(mass * temperature)
+        return np.sum(self.masses * self.temperatures)

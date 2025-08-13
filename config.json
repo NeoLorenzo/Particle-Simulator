@@ -13,6 +13,7 @@
     "softening_factor": 10,
     "min_temp": 200.0,
     "max_temp": 1000.0,
-    "heat_transfer_coefficient": 0.1
+    "heat_transfer_coefficient": 0.1,
+    "coefficient_of_restitution": 0.8
   }
 }
