@@ -65,29 +65,37 @@ def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatu
     if distance_sq < min_distance**2 and distance_sq > 0:
         distance = np.sqrt(distance_sq)
         m_i, m_j = masses[i][0], masses[j][0]
+        total_mass = m_i + m_j
 
         # --- Store pre-collision state for energy calculation ---
         v_i_before = velocities[i].copy()
         v_j_before = velocities[j].copy()
         ke_before = 0.5 * m_i * np.sum(v_i_before**2) + 0.5 * m_j * np.sum(v_j_before**2)
 
-        # 1. Resolve overlap - REMOVED
-        # This step is non-physical and was adding energy to the system.
-        # overlap = min_distance - distance
-        # correction = 0.5 * overlap * (distance_vec / distance)
-        # positions[i] -= correction
-        # positions[j] += correction
+        # 1. Resolve Overlap (Rule 3 - Abstraction for Impenetrability)
+        # This is a physically-grounded abstraction to prevent particle overlap.
+        # We move particles along the collision normal to resolve the overlap.
+        # The correction is distributed based on the inverse of their mass ratio,
+        # ensuring the system's center of mass is not affected by the correction.
+        # This is more stable and realistic than a simple 50/50 split.
+        overlap = min_distance - distance
+        normal = distance_vec / distance
+        # Move particle i
+        positions[i] -= (m_j / total_mass) * overlap * normal
+        # Move particle j
+        positions[j] += (m_i / total_mass) * overlap * normal
 
         # 2. Inelastic Collision Response
-        normal = distance_vec / distance
         v_rel = v_j_before - v_i_before
         v_rel_dot_normal = v_rel[0] * normal[0] + v_rel[1] * normal[1]
 
-        # Impulse formula now includes the coefficient of restitution
-        impulse_j = (-(1 + restitution) * m_i * m_j * v_rel_dot_normal) / (m_i + m_j)
+        # Only apply impulse if particles are moving towards each other
+        if v_rel_dot_normal < 0:
+            # Impulse formula now includes the coefficient of restitution
+            impulse_j = (-(1 + restitution) * m_i * m_j * v_rel_dot_normal) / total_mass
 
-        velocities[i] -= (impulse_j / m_i) * normal
-        velocities[j] += (impulse_j / m_j) * normal
+            velocities[i] -= (impulse_j / m_i) * normal
+            velocities[j] += (impulse_j / m_j) * normal
 
         # 3. Convert Lost Kinetic Energy to Thermal Energy
         ke_after = 0.5 * m_i * np.sum(velocities[i]**2) + 0.5 * m_j * np.sum(velocities[j]**2)
