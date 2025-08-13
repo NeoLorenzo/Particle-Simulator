@@ -29,3 +29,7 @@ TITLE = "Particle Simulator"
 
 # Visual Effects
 TRAIL_EFFECT_COLOR = (0, 0, 0, 30) # RGBA. Alpha controls trail length (lower = longer).
+
+# Bloom effect settings
+BLOOM_RADIUS = 20 # The radius of the glow effect in pixels. Larger is more diffuse.
+BLOOM_INTENSITY = 30 # The brightness of the glow (0-255).

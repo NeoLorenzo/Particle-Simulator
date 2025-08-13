@@ -134,15 +134,41 @@ def main():
             accumulated_integration_error = 0.0
 
         # --- Drawing ---
-        # Instead of clearing the screen, fill our dedicated surface with a
-        # semi-transparent color and blit it to the main screen. This creates
-        # a fading trail effect for all moving objects.
+        # 1. Draw the fading trails to the main screen.
         trail_surface.fill(constants.TRAIL_EFFECT_COLOR)
         screen.blit(trail_surface, (0, 0))
 
+        # 2. Create the bloom/glow effect.
+        # This is a purely visual effect and does not impact the physics simulation.
+        # It works by drawing the particles to a temporary surface, scaling it
+        # down and then up again to create a blur, and then blending this
+        # blurred "glow map" additively onto the main screen.
+
+        # Create a temporary surface to draw the glow map on.
+        glow_surface = pygame.Surface((constants.WIDTH, constants.HEIGHT), pygame.SRCALPHA)
+        particle_system.draw(glow_surface) # Draw particles onto it.
+
+        # Scale the surface down to a small size, then scale it back up smoothly.
+        # This is a fast and effective way to create a blur.
+        scale = constants.BLOOM_RADIUS
+        scaled_size = (constants.WIDTH // scale, constants.HEIGHT // scale)
+        scaled_surface = pygame.transform.smoothscale(glow_surface, scaled_size)
+        blurred_surface = pygame.transform.smoothscale(scaled_surface, (constants.WIDTH, constants.HEIGHT))
+
+        # Control the brightness of the glow map. We do this by filling the
+        # surface, using a multiplicative blend. This scales the brightness of
+        # every pixel by the intensity value. A value of 0 makes the surface
+        # black (no glow), and 255 leaves it at full brightness.
+        intensity = constants.BLOOM_INTENSITY
+        blurred_surface.fill((intensity, intensity, intensity), special_flags=pygame.BLEND_RGB_MULT)
+
+        # Blit the final glow map to the screen additively.
+        screen.blit(blurred_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+        # 3. Draw the crisp particles on top of the glow.
         particle_system.draw(screen)
 
-        # Update the display
+        # 4. Update the display
         pygame.display.flip()
 
         # Cap the frame rate
