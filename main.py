@@ -75,15 +75,18 @@ def main():
 
         # --- Calculate and accumulate energy changes for this tick ---
         total_delta_this_tick = energy_after_tick - energy_before_tick
-        pe_gain_this_tick = particle_system.pe_gain_collisions
-        ke_loss_this_tick = particle_system.ke_loss_collisions
 
-        # The integration error is the total change minus the known change from collisions
-        integration_error_this_tick = total_delta_this_tick - pe_gain_this_tick
+        # The total energy change in one tick is, by definition, the numerical
+        # error from the integration and collision handling steps. We accumulate
+        # this error to be corrected periodically.
+        integration_error_this_tick = total_delta_this_tick
         accumulated_integration_error += integration_error_this_tick
 
-        accumulated_pe_gain += pe_gain_this_tick
-        accumulated_ke_loss += ke_loss_this_tick
+        # The detailed tracking of PE/KE changes from collisions is no longer
+        # needed for the primary energy correction logic, but we will keep the
+        # accumulators for now for potential future debugging or analysis.
+        accumulated_pe_gain += particle_system.pe_gain_collisions
+        accumulated_ke_loss += particle_system.ke_loss_collisions
 
 
         # --- Logging (Rule 2.4, throttled) ---
