@@ -135,10 +135,13 @@ class ParticleSystem:
         self.radii = np.sqrt(self.masses).astype(int)
 
         # --- Spatial Grid Optimization ---
-        # Heuristic: Cell size should be at least as large as the largest possible particle's diameter
-        # to ensure any two colliding particles can be in adjacent cells.
+        # Heuristic: Cell size is based on the largest possible particle's diameter,
+        # adjusted by a tunable multiplier from the config.
         max_radius = np.sqrt(config['max_mass']).astype(int)
-        self.cell_size = max_radius * 2
+        base_cell_size = max_radius * 2
+        multiplier = config.get('grid_cell_size_multiplier', 1.0) # Default to 1 if not in config
+        self.cell_size = int(base_cell_size * multiplier)
+
         if self.cell_size == 0: # Avoid division by zero if masses are tiny
             self.cell_size = 10 # A reasonable default
         self.grid_width = int(np.ceil(self.bounds[0] / self.cell_size))
