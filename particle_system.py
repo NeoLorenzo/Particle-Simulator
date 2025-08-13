@@ -71,11 +71,12 @@ def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatu
         v_j_before = velocities[j].copy()
         ke_before = 0.5 * m_i * np.sum(v_i_before**2) + 0.5 * m_j * np.sum(v_j_before**2)
 
-        # 1. Resolve overlap
-        overlap = min_distance - distance
-        correction = 0.5 * overlap * (distance_vec / distance)
-        positions[i] -= correction
-        positions[j] += correction
+        # 1. Resolve overlap - REMOVED
+        # This step is non-physical and was adding energy to the system.
+        # overlap = min_distance - distance
+        # correction = 0.5 * overlap * (distance_vec / distance)
+        # positions[i] -= correction
+        # positions[j] += correction
 
         # 2. Inelastic Collision Response
         normal = distance_vec / distance
