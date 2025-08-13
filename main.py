@@ -6,6 +6,9 @@ import logger_setup
 import numpy as np
 from particle_system import ParticleSystem
 
+# Get the application's dedicated logger
+logger = logging.getLogger("particle_sim")
+
 def main():
     """
     Main function to initialize and run the particle simulation.
@@ -17,12 +20,12 @@ def main():
         config = json.load(f)
     sim_config = config['simulation']
 
-    logging.info("Application starting...")
-    logging.info(f"Loaded configuration: {config}")
+    logger.info("Application starting...")
+    logger.info(f"Loaded configuration: {config}")
 
     # Initialize the master random number generator (RNG)
     rng = np.random.default_rng(config['master_seed'])
-    logging.info(f"Master RNG initialized with seed: {config['master_seed']}")
+    logger.info(f"Master RNG initialized with seed: {config['master_seed']}")
 
     # --- Initialization ---
     pygame.init()
@@ -60,7 +63,7 @@ def main():
         # Cap the frame rate
         clock.tick(constants.FPS)
 
-    logging.info("Application shutting down.")
+    logger.info("Application shutting down.")
     pygame.quit()
 
 if __name__ == "__main__":

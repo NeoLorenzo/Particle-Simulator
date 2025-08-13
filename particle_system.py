@@ -3,6 +3,77 @@
 import numpy as np
 import pygame
 import logging
+import numba
+
+logger = logging.getLogger("particle_sim")
+
+# --- JIT-Compiled Physics Functions ---
+# These functions are compiled to machine code by Numba for maximum performance.
+# They are deliberately kept outside the ParticleSystem class and operate only on
+# NumPy arrays and simple scalar values, as required by Numba's nopython mode.
+
+@numba.jit(nopython=True)
+def _calculate_gravity_for_pair_jit(i, j, positions, masses, accelerations, g_const, softening):
+    """
+    Numba-accelerated gravity calculation for a single pair of particles.
+    Modifies the 'accelerations' array in place.
+    """
+    pos_i, pos_j = positions[i], positions[j]
+    mass_i, mass_j = masses[i][0], masses[j][0] # Access scalar from (1,) array
+
+    diff = pos_j - pos_i
+    dist_sq = np.sum(diff**2) + softening
+
+    # Calculate force magnitude: F = G * (m1*m2) / r^2
+    force_magnitude = (g_const * mass_i * mass_j) / dist_sq
+
+    # Calculate force vector
+    dist = np.sqrt(dist_sq)
+    force_vector = force_magnitude * (diff / dist)
+
+    # Apply acceleration (a = F/m) to both particles
+    accelerations[i] += force_vector / mass_i
+    accelerations[j] -= force_vector / mass_j
+
+@numba.jit(nopython=True)
+def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatures, heat_coeff):
+    """
+    Numba-accelerated collision and heat transfer calculation for a single pair.
+    Modifies positions, velocities, and temperatures in place.
+    """
+    pos_i, pos_j = positions[i], positions[j]
+    rad_i, rad_j = radii[i][0], radii[j][0]
+
+    distance_vec = pos_j - pos_i
+    distance_sq = np.sum(distance_vec**2)
+    min_distance = rad_i + rad_j
+
+    if distance_sq < min_distance**2 and distance_sq > 0:
+        distance = np.sqrt(distance_sq)
+        # 1. Resolve overlap
+        overlap = min_distance - distance
+        correction = 0.5 * overlap * (distance_vec / distance)
+        positions[i] -= correction
+        positions[j] += correction
+
+        # 2. Heat Transfer
+        t1_before, t2_before = temperatures[i][0], temperatures[j][0]
+        temp_diff = t1_before - t2_before
+        heat_transfer = heat_coeff * temp_diff
+        temperatures[i][0] -= heat_transfer / masses[i][0]
+        temperatures[j][0] += heat_transfer / masses[j][0]
+
+        # 3. Elastic Collision Response
+        normal = distance_vec / distance
+        v_rel = velocities[j] - velocities[i]
+        m_i, m_j = masses[i][0], masses[j][0]
+        # Note: Numba requires explicit dot product for 1D arrays
+        v_rel_dot_normal = v_rel[0] * normal[0] + v_rel[1] * normal[1]
+        impulse_j = (-2 * m_i * m_j * v_rel_dot_normal) / (m_i + m_j)
+
+        velocities[i] -= (impulse_j / m_i) * normal
+        velocities[j] += (impulse_j / m_j) * normal
+
 
 class ParticleSystem:
     """
@@ -44,8 +115,8 @@ class ParticleSystem:
         self.grid_height = int(np.ceil(self.bounds[1] / self.cell_size))
         self.grid = [[] for _ in range(self.grid_width * self.grid_height)]
 
-        logging.info(f"ParticleSystem created for {num_particles} particles.")
-        logging.info(f"Spatial grid initialized with cell size {self.cell_size} ({self.grid_width}x{self.grid_height} cells).")
+        logger.info(f"ParticleSystem created for {num_particles} particles.")
+        logger.info(f"Spatial grid initialized with cell size {self.cell_size} ({self.grid_width}x{self.grid_height} cells).")
 
     def _get_colors(self):
         """
@@ -87,8 +158,11 @@ class ParticleSystem:
         local interactions, which is a valid approach when emergent behavior is
         driven by dense clusters. The complexity is reduced from O(n^2) to
         roughly O(n*k), where k is the average number of particles in neighboring cells.
+        The core calculation is delegated to a Numba JIT-compiled function.
         """
         self.accelerations.fill(0.0)
+        g_const = self.config['gravity_constant']
+        softening = self.config['softening_factor']
 
         for cell_idx, cell in enumerate(self.grid):
             cell_x = cell_idx % self.grid_width
@@ -97,10 +171,12 @@ class ParticleSystem:
             # 1. Calculate gravity within the cell itself
             for i in range(len(cell)):
                 for j in range(i + 1, len(cell)):
-                    self._calculate_gravity_for_pair(cell[i], cell[j])
+                    _calculate_gravity_for_pair_jit(
+                        cell[i], cell[j], self.positions, self.masses,
+                        self.accelerations, g_const, softening
+                    )
 
             # 2. Calculate gravity with 4 neighboring cells to avoid double-counting.
-            # This pattern ensures each pair of adjacent cells is checked only once.
             neighbor_indices = []
             if cell_x < self.grid_width - 1: # Right
                 neighbor_indices.append(cell_idx + 1)
@@ -113,18 +189,21 @@ class ParticleSystem:
 
             for neighbor_idx in neighbor_indices:
                 neighbor_cell = self.grid[neighbor_idx]
-                # Check all pairs between the current cell and the neighbor cell
                 for p1_index in cell:
                     for p2_index in neighbor_cell:
-                        self._calculate_gravity_for_pair(p1_index, p2_index)
+                        _calculate_gravity_for_pair_jit(
+                            p1_index, p2_index, self.positions, self.masses,
+                            self.accelerations, g_const, softening
+                        )
 
     def _handle_collisions(self):
         """
         Detects and resolves collisions using the pre-built spatial grid.
         This avoids the O(n^2) check of all possible pairs by only checking
         particles in the same or adjacent grid cells.
+        The core calculation is delegated to a Numba JIT-compiled function.
         """
-        # The spatial grid is now built in the main update() loop.
+        heat_coeff = self.config['heat_transfer_coefficient']
 
         for cell_idx, cell in enumerate(self.grid):
             cell_x = cell_idx % self.grid_width
@@ -133,26 +212,30 @@ class ParticleSystem:
             # 1. Check for collisions within the cell itself
             for i in range(len(cell)):
                 for j in range(i + 1, len(cell)):
-                    self._resolve_collision(cell[i], cell[j])
+                    _resolve_collision_jit(
+                        cell[i], cell[j], self.positions, self.velocities,
+                        self.masses, self.radii, self.temperatures, heat_coeff
+                    )
 
             # 2. Check for collisions with 4 neighboring cells to avoid double-counting pairs.
-            # This pattern ensures each pair of adjacent cells is checked only once.
             neighbor_indices = []
-            # Neighbor to the right
             if cell_x < self.grid_width - 1:
                 neighbor_indices.append(cell_idx + 1)
-            # Neighbor below
             if cell_y < self.grid_height - 1:
                 neighbor_indices.append(cell_idx + self.grid_width)
-            # Neighbor to the bottom-left
             if cell_x > 0 and cell_y < self.grid_height - 1:
                 neighbor_indices.append(cell_idx + self.grid_width - 1)
-            # Neighbor to the bottom-right
             if cell_x < self.grid_width - 1 and cell_y < self.grid_height - 1:
                 neighbor_indices.append(cell_idx + self.grid_width + 1)
 
             for neighbor_idx in neighbor_indices:
-                self._check_cell_pairs(cell, self.grid[neighbor_idx])
+                neighbor_cell = self.grid[neighbor_idx]
+                for p1_index in cell:
+                    for p2_index in neighbor_cell:
+                        _resolve_collision_jit(
+                            p1_index, p2_index, self.positions, self.velocities,
+                            self.masses, self.radii, self.temperatures, heat_coeff
+                        )
 
     def _check_boundary_collisions(self):
         """
@@ -228,74 +311,3 @@ class ParticleSystem:
 
             grid_index = cell_y * self.grid_width + cell_x
             self.grid[grid_index].append(i)
-
-    def _check_cell_pairs(self, cell1: list, cell2: list):
-        """Helper to check all particle pairs between two cells."""
-        for p1_index in cell1:
-            for p2_index in cell2:
-                self._resolve_collision(p1_index, p2_index)
-
-    def _resolve_collision(self, i: int, j: int):
-        """
-        Checks and resolves a potential collision between two particles, i and j.
-        This contains the original collision logic, now called from the new grid system.
-        """
-        pos_i, pos_j = self.positions[i], self.positions[j]
-        rad_i, rad_j = self.radii[i][0], self.radii[j][0]
-
-        distance_vec = pos_j - pos_i
-        # Use squared distance for the initial check to avoid an expensive sqrt
-        distance_sq = np.sum(distance_vec**2)
-        min_distance = rad_i + rad_j
-
-        if distance_sq < min_distance**2 and distance_sq > 0:
-            distance = np.sqrt(distance_sq) # Only calculate sqrt when a collision is likely
-            # --- Collision Detected ---
-            # 1. Resolve overlap
-            overlap = min_distance - distance
-            correction = 0.5 * overlap * (distance_vec / distance)
-            self.positions[i] -= correction
-            self.positions[j] += correction
-
-            # 2. Heat Transfer
-            t1_before, t2_before = self.temperatures[i], self.temperatures[j]
-            temp_diff = t1_before - t2_before
-            heat_transfer = self.config['heat_transfer_coefficient'] * temp_diff
-            self.temperatures[i] -= heat_transfer / self.masses[i]
-            self.temperatures[j] += heat_transfer / self.masses[j]
-            # The following log is throttled by commenting out, per Rule 2.4, as it's in a hot loop.
-            # logging.debug(f"Collision heat transfer: T1_before={t1_before[0]:.2f} T2_before={t2_before[0]:.2f} -> T1_after={self.temperatures[i][0]:.2f} T2_after={self.temperatures[j][0]:.2f}")
-
-            # 3. Elastic Collision Response
-            normal = distance_vec / distance
-            v_rel = self.velocities[j] - self.velocities[i]
-            m_i, m_j = self.masses[i], self.masses[j]
-            impulse_j = (-2 * m_i * m_j * np.dot(v_rel, normal)) / (m_i + m_j)
-
-            self.velocities[i] -= (impulse_j / m_i) * normal
-            self.velocities[j] += (impulse_j / m_j) * normal
-
-    def _calculate_gravity_for_pair(self, i: int, j: int):
-        """
-        Calculates and applies the gravitational force between two particles, i and j.
-        The force is applied symmetrically to both particles.
-        """
-        pos_i, pos_j = self.positions[i], self.positions[j]
-        mass_i, mass_j = self.masses[i], self.masses[j]
-
-        diff = pos_j - pos_i
-        dist_sq = np.sum(diff**2)
-
-        # Avoid division by zero and instability at close ranges
-        dist_sq += self.config['softening_factor']
-
-        # Calculate force magnitude: F = G * (m1*m2) / r^2
-        force_magnitude = (self.config['gravity_constant'] * mass_i * mass_j) / dist_sq
-
-        # Calculate force vector
-        dist = np.sqrt(dist_sq)
-        force_vector = force_magnitude * (diff / dist)
-
-        # Apply acceleration (a = F/m) to both particles
-        self.accelerations[i] += force_vector / mass_i
-        self.accelerations[j] -= force_vector / mass_j
