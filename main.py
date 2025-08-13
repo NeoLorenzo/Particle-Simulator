@@ -1,5 +1,3 @@
-# main.py
-
 import pygame
 import constants
 import json
