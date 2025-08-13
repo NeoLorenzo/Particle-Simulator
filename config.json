@@ -6,10 +6,13 @@
     "format": "%(asctime)s - %(levelname)s - %(message)s"
   },
   "simulation": {
-    "particle_count": 50,
+    "particle_count": 500,
     "min_mass": 10.0,
     "max_mass": 50.0,
     "gravity_constant": 0.1,
-    "softening_factor": 10
+    "softening_factor": 10,
+    "min_temp": 200.0,
+    "max_temp": 1000.0,
+    "heat_transfer_coefficient": 0.1
   }
 }

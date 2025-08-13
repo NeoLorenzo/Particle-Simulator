@@ -21,6 +21,8 @@ FPS = 60  # Frames per second
 # Colors (RGB)
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
+RED = (255, 0, 0)
+YELLOW = (255, 255, 0)
 
 # Window Title
 TITLE = "Particle Simulator"

@@ -8,15 +8,7 @@ from constants import WHITE
 class Particle:
     """
     Represents a single particle in the simulation.
-
-    Data Contract:
-    - Inputs to __init__:
-        - mass (float): Mass of the particle. Units: kilograms (conceptual).
-        - temperature (float): Temperature of the particle. Units: Kelvin (conceptual).
-        - position (np.ndarray): 2D vector for position [x, y]. Units: meters (conceptual).
-        - velocity (np.ndarray): 2D vector for velocity [vx, vy]. Units: m/s (conceptual).
-    - Side Effects: Logs its own creation at the DEBUG level.
-    - Invariants: Position, velocity, and acceleration are always 2D NumPy arrays.
+    ...
     """
     def __init__(self, mass: float, temperature: float, position: np.ndarray, velocity: np.ndarray):
         self.mass = mass
@@ -29,6 +21,26 @@ class Particle:
         self.radius = int(np.sqrt(mass))
 
         logging.debug(f"Particle created: mass={self.mass}, temp={self.temperature}, pos={self.position}")
+
+    @property
+    def color(self):
+        """
+        Determines particle color based on temperature.
+        This is an abstraction (Rule 8) for visualization.
+        Maps temperature from a min/max range to a Red -> Yellow -> White gradient.
+        """
+        # Normalize temperature to a 0-1 range
+        norm_temp = (self.temperature - 200) / (1000 - 200) # Using fixed bounds for color stability
+        norm_temp = np.clip(norm_temp, 0, 1)
+
+        if norm_temp < 0.5:
+            # Red to Yellow
+            t = norm_temp * 2
+            return (255, int(t * 255), 0)
+        else:
+            # Yellow to White
+            t = (norm_temp - 0.5) * 2
+            return (255, 255, int(t * 255))
 
     def update(self):
         """
@@ -70,4 +82,4 @@ class Particle:
         """
         Draws the particle on the screen.
         """
-        pygame.draw.circle(screen, WHITE, self.position.astype(int), self.radius)
+        pygame.draw.circle(screen, self.color, self.position.astype(int), self.radius)

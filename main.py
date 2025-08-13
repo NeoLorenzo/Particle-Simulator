@@ -36,10 +36,11 @@ def main():
     particles = []
     for _ in range(sim_config['particle_count']):
         mass = rng.uniform(sim_config['min_mass'], sim_config['max_mass'])
+        temp = rng.uniform(sim_config['min_temp'], sim_config['max_temp'])
         particles.append(
             Particle(
                 mass=mass,
-                temperature=300.0, # Static for now
+                temperature=temp,
                 position=rng.random(2) * np.array([constants.WIDTH, constants.HEIGHT]),
                 velocity=np.zeros(2, dtype=float) # Start at rest
             )
@@ -97,7 +98,29 @@ def main():
                     p1.position -= 0.5 * overlap * (distance_vec / distance)
                     p2.position += 0.5 * overlap * (distance_vec / distance)
 
-                    # 2. Calculate elastic collision response (2D)
+                    # 2. Handle Heat Transfer (Thermodynamics)
+                    # Abstraction (Rule 8): Simplified heat transfer model.
+                    # Heat flows from hot to cold, proportional to the temperature difference.
+                    temp_diff = p1.temperature - p2.temperature
+                    heat_transfer = sim_config['heat_transfer_coefficient'] * temp_diff
+                    
+                    # Change in temp = heat_energy / mass (simplified)
+                    # Abstraction (Rule 8): Simplified heat transfer model.
+                    # Heat flows from hot to cold, proportional to the temperature difference.
+                    temp_diff = p1.temperature - p2.temperature
+                    heat_transfer = sim_config['heat_transfer_coefficient'] * temp_diff
+                    
+                    # Store temperatures before the change for accurate logging
+                    t1_before = p1.temperature
+                    t2_before = p2.temperature
+
+                    # Change in temp = heat_energy / mass (simplified)
+                    p1.temperature -= heat_transfer / p1.mass
+                    p2.temperature += heat_transfer / p2.mass
+                    
+                    logging.debug(f"Collision heat transfer: T1_before={t1_before:.2f} T2_before={t2_before:.2f} -> T1_after={p1.temperature:.2f} T2_after={p2.temperature:.2f}")
+
+                    # 3. Calculate elastic collision response (2D)
                     # Source: https://en.wikipedia.org/wiki/Elastic_collision#Two-dimensional_collision_with_two_moving_objects
                     normal = distance_vec / distance
                     v_rel = p2.velocity - p1.velocity
