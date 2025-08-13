@@ -80,6 +80,34 @@ def main():
                 p1.acceleration += force_vector / p1.mass
                 p2.acceleration -= force_vector / p2.mass
 
+        # --- Collision Detection and Response (O(n^2) complexity) ---
+        for i in range(len(particles)):
+            for j in range(i + 1, len(particles)):
+                p1 = particles[i]
+                p2 = particles[j]
+
+                distance_vec = p2.position - p1.position
+                distance = np.linalg.norm(distance_vec)
+                min_distance = p1.radius + p2.radius
+
+                if distance < min_distance:
+                    # Collision detected
+                    # 1. Resolve overlap to prevent sticking
+                    overlap = min_distance - distance
+                    p1.position -= 0.5 * overlap * (distance_vec / distance)
+                    p2.position += 0.5 * overlap * (distance_vec / distance)
+
+                    # 2. Calculate elastic collision response (2D)
+                    # Source: https://en.wikipedia.org/wiki/Elastic_collision#Two-dimensional_collision_with_two_moving_objects
+                    normal = distance_vec / distance
+                    v_rel = p2.velocity - p1.velocity
+                    impulse_j = (-2 * p1.mass * p2.mass * np.dot(v_rel, normal)) / (p1.mass + p2.mass)
+
+                    # Apply impulse to velocities
+                    p1.velocity -= (impulse_j / p1.mass) * normal
+                    p2.velocity += (impulse_j / p2.mass) * normal
+
+
         # --- Logic Update ---
         for p in particles:
             p.update()
