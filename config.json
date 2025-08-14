@@ -5,10 +5,10 @@
     "level": "DEBUG",
     "format": "%(asctime)s - %(levelname)s - %(message)s"
   },
-  "simulation": {
-    "particle_count": 1000,
-    "min_mass": 5.0,
-    "max_mass": 10.0,
+"simulation": {
+    "particle_count": 700,
+    "min_mass": 20.0,
+    "max_mass": 40.0,
     "gravity_constant": 0.1,
     "softening_factor": 10,
     "barnes_hut_theta": 0.5,
@@ -16,6 +16,8 @@
     "max_temp": 1000.0,
     "heat_transfer_coefficient": 0.1,
     "coefficient_of_restitution": 0.8,
-    "grid_cell_size_multiplier": 10.0
+    "grid_cell_size_multiplier": 10.0,
+    "position_correction_factor": 1.05,
+    "collision_solver_iterations": 4
   }
 }
