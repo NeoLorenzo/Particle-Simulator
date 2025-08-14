@@ -357,8 +357,8 @@ class ParticleSystem:
         """
         self.accelerations.fill(0.0)
 
-        # Flatten the tree and cache the result for this frame.
-        self._cached_flat_tree = self.qtree.flatten_tree()
+        # The tree is now built directly into a flattened format. Get the cached arrays.
+        self._cached_flat_tree = self.qtree.get_flattened_tree()
 
         # Call the JIT-compiled function with the flattened data
         _calculate_gravity_barnes_hut_jit(
@@ -524,7 +524,7 @@ class ParticleSystem:
         calculation and is highly performant. It uses the cached flattened tree
         data from the current frame to avoid redundant calculations.
         """
-        if self.qtree.root.total_mass == 0 or self._cached_flat_tree is None:
+        if self.qtree.num_active_nodes == 0 or self._cached_flat_tree is None:
             return 0.0
 
         # Use the cached flattened tree data from the current frame.
