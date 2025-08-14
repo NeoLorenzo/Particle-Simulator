@@ -20,9 +20,11 @@ The update sequence in each tick is as follows:
 
 After this continuous force integration, discrete events like collisions are handled.
 
-### 2. Gravitational Interaction (N-Body Approximation)
+### 2. Gravitational Interaction (Barnes-Hut Approximation)
 
-The simulation approximates the gravitational N-body problem. The force between any two particles is based on Newton's Law of Universal Gravitation, with a key modification for numerical stability.
+The simulation approximates the gravitational N-body problem using the **Barnes-Hut algorithm**, a scientifically-grounded abstraction that reduces the computational complexity from O(n²) to O(n log n). This allows for the efficient simulation of long-range gravitational forces between thousands of particles.
+
+The force between any two particles is based on Newton's Law of Universal Gravitation, with a key modification for numerical stability:
 
 **F = G * (m1 * m2) / (r² + s)**
 
@@ -33,7 +35,14 @@ Where:
 *   **r²** is the square of the distance between them.
 *   **s** is a `softening_factor` from `config.json`. This prevents the force from becoming infinite when particles get extremely close, avoiding numerical instability and the "slingshot" effect.
 
-To make this calculation feasible for thousands of particles, it is heavily optimized using a spatial grid (see Performance section), meaning only particles in nearby grid cells exert force on each other. This is a scientifically-grounded abstraction where long-range forces are ignored in favor of performance, focusing on the emergent behavior of local clusters.
+The Barnes-Hut algorithm works as follows:
+1.  A **QuadTree** is constructed each tick, spatially partitioning all particles into a hierarchy of nodes.
+2.  The center of mass and total mass are calculated for each node in the tree.
+3.  To calculate the net force on a given particle, the tree is traversed from the root.
+4.  For each node, the ratio of the node's width to the distance from the particle (`width / dist`) is calculated.
+5.  If this ratio is below a certain threshold (`barnes_hut_theta` in `config.json`), the entire cluster of particles within that node is treated as a single, massive body located at the node's center of mass. A single gravitational force calculation is performed.
+6.  If the ratio is above the threshold, the node is too close to be approximated, and the algorithm recursively traverses its children nodes.
+7.  If a leaf node is reached, direct force calculations are performed with the individual particles inside it.
 
 ### 3. Inelastic Collisions and Energy Transformation
 
@@ -57,17 +66,17 @@ The simulation actively corrects for this drift:
 3.  This error is accumulated over 100 ticks.
 4.  Every 100 ticks, a `thermal_correction` is applied. The exact amount of energy that was artificially gained or lost due to numerical error is subtracted from or added to the system's total thermal energy, ensuring the simulation's total energy remains constant over long periods.
 
-### 5. Potential Energy Calculation Discrepancy
-
-It is important to note that the function `get_total_potential_energy` uses a simplified neighbor-checking pattern (checking only 4 of 8 neighboring grid cells) to sum the potential energy of the system. This is inconsistent with the `_calculate_gravity` function, which uses a more robust, symmetric check of all 8 neighboring cells. This means the reported potential energy is an approximation and does not perfectly correspond to the forces being applied, which is a source of the numerical error that the system-wide energy conservation mechanism corrects.
-
 ## Computational Optimizations for Performance
 
 A naive O(n²) implementation would be too slow. This simulation uses several techniques to achieve high performance.
 
-### 1. Spatial Grid for Broad-Phase Interaction
+### 1. Barnes-Hut Algorithm for Gravity
 
-To avoid O(n²) complexity, the simulation space is partitioned into a uniform grid. The cell size is determined by a heuristic based on the maximum particle radius and a `grid_cell_size_multiplier` in the config. When checking for gravity or collisions, a particle only interacts with other particles in its own grid cell and its 8 immediate neighbors. This reduces the complexity to approximately O(n\*k), where *k* is the average number of particles in the local neighborhood. To prevent double-counting interactions and ensure forces are symmetric (Newton's Third Law), interactions between pairs of particles (`p1`, `p2`) are only ever calculated when `p1_index < p2_index`.
+The primary optimization for the N-body gravity calculation is the **Barnes-Hut algorithm**, implemented using a **QuadTree**. By treating distant particle clusters as single points of mass, it reduces the complexity of calculating gravitational forces from O(n²) to O(n log n), enabling the simulation of long-range interactions that would otherwise be computationally prohibitive.
+
+### 2. Spatial Grid for Broad-Phase Collision Detection
+
+For discrete collisions, which are short-range interactions, the simulation space is partitioned into a uniform grid. The cell size is determined by a heuristic based on the maximum particle radius and a `grid_cell_size_multiplier` in the config. When checking for collisions, a particle only interacts with other particles in its own grid cell and its 8 immediate neighbors. This "broad-phase" check drastically reduces the number of pairs that need to be considered for a direct collision check, lowering the complexity from O(n²) to approximately O(n\*k), where *k* is the average number of particles in the local neighborhood.
 
 ### 2. Just-in-Time (JIT) Compilation with Numba
 
@@ -91,8 +100,9 @@ Particle data (positions, velocities, masses, etc.) is stored in NumPy arrays. T
         *   `particle_count`: The number of particles to simulate.
         *   `gravity_constant`: The strength of gravity.
         *   `softening_factor`: Prevents extreme forces at close range.
+        *   `barnes_hut_theta`: Controls the accuracy of the Barnes-Hut approximation. A lower value (e.g., 0.3) is more accurate but slower. A higher value (e.g., 0.8) is faster but less accurate.
         *   `coefficient_of_restitution`: Controls the "bounciness" of collisions (0.0 to 1.0).
-        *   `grid_cell_size_multiplier`: Adjusts the size of the spatial grid cells for performance tuning.
+        *   `grid_cell_size_multiplier`: Adjusts the size of the spatial grid cells for collision detection performance tuning.
 
 3.  **Execution:**
     *   Run the main script from your terminal:
