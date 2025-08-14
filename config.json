@@ -11,6 +11,7 @@
     "max_mass": 10.0,
     "gravity_constant": 0.1,
     "softening_factor": 10,
+    "barnes_hut_theta": 0.5,
     "min_temp": 200.0,
     "max_temp": 1000.0,
     "heat_transfer_coefficient": 0.1,

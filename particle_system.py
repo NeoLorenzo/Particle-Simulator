@@ -4,6 +4,7 @@ import numpy as np
 import pygame
 import logging
 import numba
+from quadtree import QuadTree, BoundingBox
 
 logger = logging.getLogger("particle_sim")
 
@@ -13,27 +14,102 @@ logger = logging.getLogger("particle_sim")
 # NumPy arrays and simple scalar values, as required by Numba's nopython mode.
 
 @numba.jit(nopython=True)
-def _calculate_gravity_for_pair_jit(i, j, positions, masses, accelerations, g_const, softening):
+def _calculate_gravity_barnes_hut_jit(num_particles, positions, masses, accelerations, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list):
     """
-    Numba-accelerated gravity calculation for a single pair of particles.
-    Modifies the 'accelerations' array in place.
+    Numba-accelerated main loop for Barnes-Hut gravity calculation.
+    Iterates through each particle and initiates the tree traversal.
     """
-    pos_i, pos_j = positions[i], positions[j]
-    mass_i, mass_j = masses[i][0], masses[j][0] # Access scalar from (1,) array
+    for i in range(num_particles):
+        net_force = _traverse_tree_jit(i, 0, positions, masses, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list)
+        accelerations[i] = net_force / masses[i][0]
 
-    diff = pos_j - pos_i
-    dist_sq = np.sum(diff**2) + softening
+@numba.jit(nopython=True)
+def _calculate_potential_energy_jit(node_idx, node_data, node_children, g_const, softening):
+    """
+    Recursively calculates the total potential energy of the system using the
+    flattened Barnes-Hut tree, ensuring consistency with the force model.
+    This avoids double-counting by only considering interactions within a node
+    or between a node and its children.
+    """
+    total_pe = 0.0
+    node_mass, com_x, com_y, width = node_data[node_idx]
+    is_leaf = node_children[node_idx, 0] == -1
 
-    # Calculate force magnitude: F = G * (m1*m2) / r^2
-    force_magnitude = (g_const * mass_i * mass_j) / dist_sq
+    if not is_leaf:
+        # It's an internal node.
+        # The PE of this node is the sum of the PEs of its children, plus the
+        # interaction energy between all pairs of its children.
+        for i in range(4):
+            child_idx_i = node_children[node_idx, i]
+            if child_idx_i != -1 and node_data[child_idx_i][0] > 0:
+                # 1. Add the internal PE of the child by recursing.
+                total_pe += _calculate_potential_energy_jit(child_idx_i, node_data, node_children, g_const, softening)
 
-    # Calculate force vector
-    dist = np.sqrt(dist_sq)
-    force_vector = force_magnitude * (diff / dist)
+                # 2. Add the interaction PE between this child and its siblings.
+                # To avoid double counting, we only pair (i) with (j) where j > i.
+                for j in range(i + 1, 4):
+                    child_idx_j = node_children[node_idx, j]
+                    if child_idx_j != -1 and node_data[child_idx_j][0] > 0:
+                        mass_i = node_data[child_idx_i][0]
+                        mass_j = node_data[child_idx_j][0]
+                        com_i = np.array([node_data[child_idx_i][1], node_data[child_idx_i][2]])
+                        com_j = np.array([node_data[child_idx_j][1], node_data[child_idx_j][2]])
 
-    # Apply acceleration (a = F/m) to both particles
-    accelerations[i] += force_vector / mass_i
-    accelerations[j] -= force_vector / mass_j
+                        diff = com_j - com_i
+                        dist_sq = np.sum(diff**2)
+                        if dist_sq > 0:
+                            dist = np.sqrt(dist_sq + softening)
+                            total_pe -= (g_const * mass_i * mass_j) / dist
+    # Note: For leaf nodes, the PE is considered to be zero at this level.
+    # Their contribution is handled when their parent node calculates the
+    # interaction energy between its children.
+    return total_pe
+
+@numba.jit(nopython=True)
+def _traverse_tree_jit(p_idx, node_idx, positions, masses, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list):
+    """
+    Numba-accelerated recursive traversal of the flattened QuadTree arrays.
+    This function calculates the net force on a single particle (p_idx).
+    """
+    node_mass, com_x, com_y, width = node_data[node_idx]
+    net_force = np.zeros(2)
+
+    # Check if the node is internal or a leaf by looking at its children pointers
+    is_leaf = node_children[node_idx, 0] == -1
+
+    if not is_leaf:
+        # It's an internal node
+        p_pos = positions[p_idx]
+        node_com = np.array([com_x, com_y])
+        diff = p_pos - node_com
+        dist = np.sqrt(np.sum(diff**2))
+
+        if dist > 0 and (width / dist) < theta:
+            # Node is far enough away, treat as a single body
+            force_vec = (g_const * masses[p_idx][0] * node_mass * diff) / (dist**3 + softening)
+            return -force_vec # Return force on the particle
+        else:
+            # Node is too close, recurse into children
+            for child_node_idx in node_children[node_idx]:
+                if child_node_idx != -1 and node_data[child_node_idx][0] > 0:
+                    net_force += _traverse_tree_jit(p_idx, child_node_idx, positions, masses, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list)
+            return net_force
+    else:
+        # It's a leaf node, calculate direct forces from its particles
+        start, count, _ = node_particles_map[node_idx]
+        if count > 0:
+            for i in range(count):
+                other_p_idx = particle_list[start + i]
+                if p_idx != other_p_idx:
+                    p1_pos = positions[p_idx]
+                    p2_pos = positions[other_p_idx]
+                    diff = p2_pos - p1_pos
+                    dist_sq = np.sum(diff**2)
+                    if dist_sq > 0:
+                        force_mag = (g_const * masses[p_idx][0] * masses[other_p_idx][0]) / (dist_sq + softening)
+                        dist = np.sqrt(dist_sq)
+                        net_force += force_mag * (diff / dist)
+        return net_force
 
 @numba.jit(nopython=True)
 def _calculate_potential_energy_for_pair_jit(i, j, positions, masses, g_const, softening):
@@ -136,6 +212,7 @@ class ParticleSystem:
         self.config = config
         self.bounds = np.array(bounds)
         self.restitution = config['coefficient_of_restitution']
+        self._cached_flat_tree = None # Cache for flattened tree data
 
         # --- Energy tracking variables for logging ---
         self.pe_gain_collisions = 0.0
@@ -163,8 +240,17 @@ class ParticleSystem:
         self.grid_height = int(np.ceil(self.bounds[1] / self.cell_size))
         self.grid = [[] for _ in range(self.grid_width * self.grid_height)]
 
+        self.barnes_hut_theta = config['barnes_hut_theta']
+
+        # --- QuadTree for Barnes-Hut Optimization ---
+        qtree_boundary = BoundingBox(x=0, y=0, width=self.bounds[0], height=self.bounds[1])
+        self.qtree = QuadTree(qtree_boundary)
+        # Initially build the tree with starting positions. It will be rebuilt each frame.
+        self.qtree.build(self.positions, self.masses)
+
         logger.info(f"ParticleSystem created for {num_particles} particles.")
         logger.info(f"Spatial grid initialized with cell size {self.cell_size} ({self.grid_width}x{self.grid_height} cells).")
+        logger.info(f"QuadTree initialized with boundary: {qtree_boundary}")
 
     def _get_colors(self):
         """
@@ -199,57 +285,32 @@ class ParticleSystem:
 
     def _calculate_gravity(self):
         """
-        Calculates gravitational forces using the spatial grid to limit calculations
-        to nearby particles. This is a scientifically-grounded abstraction (Rule 8)
-        that trades the accuracy of long-range forces for a significant performance
-        increase. It approximates a full n-body simulation by considering only
-        local interactions, which is a valid approach when emergent behavior is
-        driven by dense clusters. The complexity is reduced from O(n^2) to
-        roughly O(n*k), where k is the average number of particles in neighboring cells.
-        The core calculation is delegated to a Numba JIT-compiled function.
+        Calculates gravitational forces using the Numba-accelerated Barnes-Hut algorithm.
+        This is a scientifically-grounded abstraction (Rule 8) that approximates
+        the full N-body simulation by treating distant clusters of particles as
+        single macro-particles. This reduces the complexity from O(n^2) to O(n log n),
+        allowing for the simulation of realistic long-range gravitational effects.
+        The QuadTree is flattened into NumPy arrays for Numba compatibility.
         """
         self.accelerations.fill(0.0)
-        g_const = self.config['gravity_constant']
-        softening = self.config['softening_factor']
 
-        for cell_idx, cell in enumerate(self.grid):
-            cell_x = cell_idx % self.grid_width
-            cell_y = cell_idx // self.grid_width
+        # Flatten the tree and cache the result for this frame.
+        self._cached_flat_tree = self.qtree.flatten_tree()
 
-            # 1. Calculate gravity within the cell itself
-            for i in range(len(cell)):
-                for j in range(i + 1, len(cell)):
-                    _calculate_gravity_for_pair_jit(
-                        cell[i], cell[j], self.positions, self.masses,
-                        self.accelerations, g_const, softening
-                    )
-
-            # 2. Calculate gravity with all 8 neighboring cells.
-            # This is crucial for symmetry. By checking all neighbors, we ensure that
-            # if cell A checks cell B, cell B also checks cell A. This prevents the
-            # violation of Newton's Third Law that was causing artificial torque and spin.
-            for dy in [-1, 0, 1]:
-                for dx in [-1, 0, 1]:
-                    if dx == 0 and dy == 0:
-                        continue # Skip the cell itself
-
-                    neighbor_x, neighbor_y = cell_x + dx, cell_y + dy
-
-                    if 0 <= neighbor_x < self.grid_width and 0 <= neighbor_y < self.grid_height:
-                        neighbor_idx = neighbor_y * self.grid_width + neighbor_x
-                        neighbor_cell = self.grid[neighbor_idx]
-
-                        # To avoid double-counting forces (which would violate conservation of energy)
-                        # and to maintain symmetry, we only calculate interactions for pairs where
-                        # the particle in the current cell has a lower index. This creates a
-                        # consistent "ownership" of the interaction.
-                        for p1_index in cell:
-                            for p2_index in neighbor_cell:
-                                if p1_index < p2_index:
-                                    _calculate_gravity_for_pair_jit(
-                                        p1_index, p2_index, self.positions, self.masses,
-                                        self.accelerations, g_const, softening
-                                    )
+        # Call the JIT-compiled function with the flattened data
+        _calculate_gravity_barnes_hut_jit(
+            self.num_particles,
+            self.positions,
+            self.masses,
+            self.accelerations,
+            self.config['gravity_constant'],
+            self.config['softening_factor'],
+            self.barnes_hut_theta,
+            self._cached_flat_tree[0], # node_data
+            self._cached_flat_tree[1], # node_children
+            self._cached_flat_tree[2], # node_particles_map
+            self._cached_flat_tree[3]  # particle_list
+        )
 
     def _handle_collisions(self):
         """
@@ -338,10 +399,10 @@ class ParticleSystem:
         self.positions += self.velocities + 0.5 * self.accelerations
         old_accelerations = np.copy(self.accelerations)
 
-        # --- Rebuild Grid BEFORE Force/Collision Calculations ---
-        # The grid MUST be updated with the new positions before we use it
-        # to calculate gravity or collisions. This is the critical fix.
-        self._build_spatial_grid()
+        # --- Rebuild Spatial Partitioning Structures BEFORE Force/Collision Calculations ---
+        # The structures MUST be updated with the new positions before we use them.
+        self._build_spatial_grid() # Still needed for collisions
+        self.qtree.build(self.positions, self.masses) # Rebuild the QuadTree each frame
 
         # Calculate new forces/accelerations a(t+dt) based on new positions
         self._calculate_gravity()
@@ -418,48 +479,24 @@ class ParticleSystem:
 
     def get_total_potential_energy(self):
         """
-        Calculates the total gravitational potential energy of the system based on the
-        same spatial grid approximation used for force calculations. This ensures
-        consistency between the force and energy models.
+        Calculates the total gravitational potential energy of the system using the
+        Numba-accelerated Barnes-Hut tree. This is consistent with the force
+        calculation and is highly performant. It uses the cached flattened tree
+        data from the current frame to avoid redundant calculations.
         """
-        g_const = self.config['gravity_constant']
-        softening = self.config['softening_factor']
-        total_pe = 0.0
+        if self.qtree.root.total_mass == 0 or self._cached_flat_tree is None:
+            return 0.0
 
-        # This loop structure mirrors _calculate_gravity to ensure we sum the PE
-        # for the exact same set of interacting pairs.
-        for cell_idx, cell in enumerate(self.grid):
-            cell_x = cell_idx % self.grid_width
-            cell_y = cell_idx // self.grid_width
+        # Use the cached flattened tree data from the current frame.
+        node_data, node_children, _, _ = self._cached_flat_tree
 
-            # 1. PE within the cell itself
-            for i in range(len(cell)):
-                for j in range(i + 1, len(cell)):
-                    total_pe += _calculate_potential_energy_for_pair_jit(
-                        cell[i], cell[j], self.positions, self.masses, g_const, softening
-                    )
-
-            # 2. PE with all 8 neighboring cells, using the same symmetric check as gravity.
-            for dy in [-1, 0, 1]:
-                for dx in [-1, 0, 1]:
-                    if dx == 0 and dy == 0:
-                        continue # Skip the cell itself
-
-                    neighbor_x, neighbor_y = cell_x + dx, cell_y + dy
-
-                    if 0 <= neighbor_x < self.grid_width and 0 <= neighbor_y < self.grid_height:
-                        neighbor_idx = neighbor_y * self.grid_width + neighbor_x
-                        neighbor_cell = self.grid[neighbor_idx]
-
-                        # Avoid double-counting by only checking pairs where p1_index < p2_index
-                        for p1_index in cell:
-                            for p2_index in neighbor_cell:
-                                if p1_index < p2_index:
-                                    total_pe += _calculate_potential_energy_for_pair_jit(
-                                        p1_index, p2_index, self.positions, self.masses, g_const, softening
-                                    )
-
-        return total_pe
+        return _calculate_potential_energy_jit(
+            0, # Start at the root node (index 0)
+            node_data,
+            node_children,
+            self.config['gravity_constant'],
+            self.config['softening_factor']
+        )
 
     def apply_global_temperature_correction(self, energy_change: float):
         """

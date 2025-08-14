@@ -9,9 +9,110 @@ from particle_system import ParticleSystem
 # Get the application's dedicated logger
 logger = logging.getLogger("particle_sim")
 
+import cProfile, pstats
+
+def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surface):
+    """
+    The main simulation loop, extracted to be run under the profiler.
+    This function is temporary for diagnostics, per Rule 11.
+    """
+    # --- Loop Setup ---
+    running = True
+    tick = 0
+    last_logged_energy = 0.0
+    first_log = True
+    accumulated_pe_gain = 0.0
+    accumulated_ke_loss = 0.0
+    accumulated_integration_error = 0.0
+
+    # --- Profiling Configuration (Rule 11) ---
+    PROFILING_TICKS = 6000
+
+    while running and tick < PROFILING_TICKS:
+        # Event handling
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        # --- Physics & Logic Update ---
+        energy_before_tick = (
+            particle_system.get_total_kinetic_energy() +
+            particle_system.get_total_potential_energy() +
+            particle_system.get_total_thermal_energy()
+        )
+        particle_system.update()
+        energy_after_tick = (
+            particle_system.get_total_kinetic_energy() +
+            particle_system.get_total_potential_energy() +
+            particle_system.get_total_thermal_energy()
+        )
+
+        # --- Calculate and accumulate energy changes for this tick ---
+        total_delta_this_tick = energy_after_tick - energy_before_tick
+        integration_error_this_tick = total_delta_this_tick
+        accumulated_integration_error += integration_error_this_tick
+        accumulated_pe_gain += particle_system.pe_gain_collisions
+        accumulated_ke_loss += particle_system.ke_loss_collisions
+
+        # --- Logging (Rule 2.4, throttled) ---
+        if tick % 100 == 0:
+            thermal_correction = -accumulated_integration_error
+            particle_system.apply_global_temperature_correction(thermal_correction)
+
+            ke = particle_system.get_total_kinetic_energy()
+            te = particle_system.get_total_thermal_energy()
+            pe = particle_system.get_total_potential_energy()
+            total_energy = ke + te + pe
+
+            if first_log:
+                delta_e = 0.0
+                last_logged_energy = energy_before_tick
+                first_log = False
+            else:
+                delta_e = total_energy - last_logged_energy
+
+            last_logged_energy = total_energy
+
+            logger.debug(
+                f"Tick={tick}, "
+                f"Kinetic={ke:.2f}, "
+                f"Thermal={te:.2f}, "
+                f"Potential={pe:.2f}, "
+                f"TotalSystemEnergy={total_energy:.2f}, "
+                f"Delta_E={delta_e:+.2f}, "
+                f"AccumulatedIntegrationError={accumulated_integration_error:+.2f}, "
+                f"ThermalCorrection={thermal_correction:+.2f}"
+            )
+
+            accumulated_pe_gain = 0.0
+            accumulated_ke_loss = 0.0
+            accumulated_integration_error = 0.0
+
+        # --- Drawing ---
+        trail_surface.fill(constants.TRAIL_EFFECT_COLOR)
+        screen.blit(trail_surface, (0, 0))
+
+        glow_surface = pygame.Surface((constants.WIDTH, constants.HEIGHT), pygame.SRCALPHA)
+        particle_system.draw(glow_surface)
+
+        scale = constants.BLOOM_RADIUS
+        scaled_size = (constants.WIDTH // scale, constants.HEIGHT // scale)
+        scaled_surface = pygame.transform.smoothscale(glow_surface, scaled_size)
+        blurred_surface = pygame.transform.smoothscale(scaled_surface, (constants.WIDTH, constants.HEIGHT))
+
+        intensity = constants.BLOOM_INTENSITY
+        blurred_surface.fill((intensity, intensity, intensity), special_flags=pygame.BLEND_RGB_MULT)
+        screen.blit(blurred_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+        particle_system.draw(screen)
+        pygame.display.flip()
+        clock.tick(constants.FPS)
+        tick += 1
+
 def main():
     """
     Main function to initialize and run the particle simulation.
+    This version is modified to run the profiler for a fixed number of ticks.
     """
     # --- Setup ---
     logger_setup.setup_logging()
@@ -33,7 +134,6 @@ def main():
     pygame.display.set_caption(constants.TITLE)
     clock = pygame.time.Clock()
 
-    # Create the particle system, which manages all particle data and physics
     particle_system = ParticleSystem(
         num_particles=sim_config['particle_count'],
         config=sim_config,
@@ -41,140 +141,19 @@ def main():
         bounds=(constants.WIDTH, constants.HEIGHT)
     )
 
-    # Create a surface for the fading trail effect, needs SRCALPHA for transparency
     trail_surface = pygame.Surface((constants.WIDTH, constants.HEIGHT), pygame.SRCALPHA)
 
-    # --- Main loop ---
-    running = True
-    tick = 0
-    last_logged_energy = 0.0
-    first_log = True
-    # Accumulators for energy changes over the logging interval
-    accumulated_pe_gain = 0.0
-    accumulated_ke_loss = 0.0
-    accumulated_integration_error = 0.0
-    while running:
-        # Event handling
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
+    # --- Profiling Run (Rule 11) ---
+    profiler = cProfile.Profile()
+    profiler.enable()
 
-        # --- Physics & Logic Update ---
-        # Measure energy before the tick's physics are processed
-        energy_before_tick = (
-            particle_system.get_total_kinetic_energy() +
-            particle_system.get_total_potential_energy() +
-            particle_system.get_total_thermal_energy()
-        )
+    # Run the loop function
+    run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surface)
 
-        particle_system.update()
-
-        # Measure energy after the tick
-        energy_after_tick = (
-            particle_system.get_total_kinetic_energy() +
-            particle_system.get_total_potential_energy() +
-            particle_system.get_total_thermal_energy()
-        )
-
-        # --- Calculate and accumulate energy changes for this tick ---
-        total_delta_this_tick = energy_after_tick - energy_before_tick
-
-        # The total energy change in one tick is, by definition, the numerical
-        # error from the integration and collision handling steps. We accumulate
-        # this error to be corrected periodically.
-        integration_error_this_tick = total_delta_this_tick
-        accumulated_integration_error += integration_error_this_tick
-
-        # The detailed tracking of PE/KE changes from collisions is no longer
-        # needed for the primary energy correction logic, but we will keep the
-        # accumulators for now for potential future debugging or analysis.
-        accumulated_pe_gain += particle_system.pe_gain_collisions
-        accumulated_ke_loss += particle_system.ke_loss_collisions
-
-
-        # --- Logging (Rule 2.4, throttled) ---
-        if tick % 100 == 0:
-            # --- BEGIN ENERGY CORRECTION ---
-            # This is a non-physical step to test forcing energy conservation.
-            thermal_correction = -accumulated_integration_error
-            particle_system.apply_global_temperature_correction(thermal_correction)
-            # --- END ENERGY CORRECTION ---
-
-            # Recalculate final energy state after the correction
-            ke = particle_system.get_total_kinetic_energy()
-            te = particle_system.get_total_thermal_energy()
-            pe = particle_system.get_total_potential_energy()
-            total_energy = ke + te + pe
-
-            # Calculate the change in energy since the last log event
-            if first_log:
-                delta_e = 0.0
-                # On the first run, last_logged_energy should be the initial state
-                last_logged_energy = energy_before_tick
-                first_log = False
-
-            delta_e = total_energy - last_logged_energy
-            last_logged_energy = total_energy
-
-            # Using DEBUG level for dense trace info (Rule 2.5)
-            logger.debug(
-                f"Tick={tick}, "
-                f"Kinetic={ke:.2f}, "
-                f"Thermal={te:.2f}, "
-                f"Potential={pe:.2f}, "
-                f"TotalSystemEnergy={total_energy:.2f}, "
-                f"Delta_E={delta_e:+.2f}, "
-                f"AccumulatedIntegrationError={accumulated_integration_error:+.2f}, "
-                f"ThermalCorrection={thermal_correction:+.2f}"
-            )
-
-            # Reset accumulators for the next interval
-            accumulated_pe_gain = 0.0
-            accumulated_ke_loss = 0.0
-            accumulated_integration_error = 0.0
-
-        # --- Drawing ---
-        # 1. Draw the fading trails to the main screen.
-        trail_surface.fill(constants.TRAIL_EFFECT_COLOR)
-        screen.blit(trail_surface, (0, 0))
-
-        # 2. Create the bloom/glow effect.
-        # This is a purely visual effect and does not impact the physics simulation.
-        # It works by drawing the particles to a temporary surface, scaling it
-        # down and then up again to create a blur, and then blending this
-        # blurred "glow map" additively onto the main screen.
-
-        # Create a temporary surface to draw the glow map on.
-        glow_surface = pygame.Surface((constants.WIDTH, constants.HEIGHT), pygame.SRCALPHA)
-        particle_system.draw(glow_surface) # Draw particles onto it.
-
-        # Scale the surface down to a small size, then scale it back up smoothly.
-        # This is a fast and effective way to create a blur.
-        scale = constants.BLOOM_RADIUS
-        scaled_size = (constants.WIDTH // scale, constants.HEIGHT // scale)
-        scaled_surface = pygame.transform.smoothscale(glow_surface, scaled_size)
-        blurred_surface = pygame.transform.smoothscale(scaled_surface, (constants.WIDTH, constants.HEIGHT))
-
-        # Control the brightness of the glow map. We do this by filling the
-        # surface, using a multiplicative blend. This scales the brightness of
-        # every pixel by the intensity value. A value of 0 makes the surface
-        # black (no glow), and 255 leaves it at full brightness.
-        intensity = constants.BLOOM_INTENSITY
-        blurred_surface.fill((intensity, intensity, intensity), special_flags=pygame.BLEND_RGB_MULT)
-
-        # Blit the final glow map to the screen additively.
-        screen.blit(blurred_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-        # 3. Draw the crisp particles on top of the glow.
-        particle_system.draw(screen)
-
-        # 4. Update the display
-        pygame.display.flip()
-
-        # Cap the frame rate
-        clock.tick(constants.FPS)
-
-        tick += 1
+    profiler.disable()
+    logger.info("Profiling complete. Printing stats...")
+    stats = pstats.Stats(profiler).sort_stats('cumtime')
+    stats.print_stats(20) # Print the top 20 time-consuming functions
 
     logger.info("Application shutting down.")
     pygame.quit()
