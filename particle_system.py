@@ -126,6 +126,64 @@ def _calculate_potential_energy_for_pair_jit(i, j, positions, masses, g_const, s
     return potential
 
 @numba.jit(nopython=True)
+def _handle_collisions_jit(grid_indices, grid_offsets, grid_width, grid_height, positions, velocities, masses, radii, temperatures, heat_coeff, restitution, g_const, softening):
+    """
+    Numba-accelerated broad-phase and narrow-phase collision detection and resolution.
+    Iterates through the spatial grid and resolves collisions for neighboring particles.
+    """
+    total_pe_change = 0.0
+    total_ke_lost = 0.0
+    num_cells = grid_width * grid_height
+
+    for cell_idx in range(num_cells):
+        cell_x = cell_idx % grid_width
+        cell_y = cell_idx // grid_width
+
+        start_idx = grid_offsets[cell_idx]
+        end_idx = grid_offsets[cell_idx + 1]
+
+        # 1. Check for collisions within the cell itself
+        for i in range(start_idx, end_idx):
+            p1_index = grid_indices[i]
+            for j in range(i + 1, end_idx):
+                p2_index = grid_indices[j]
+                pe_change, ke_lost = _resolve_collision_jit(
+                    p1_index, p2_index, positions, velocities,
+                    masses, radii, temperatures, heat_coeff, restitution,
+                    g_const, softening
+                )
+                total_pe_change += pe_change
+                total_ke_lost += ke_lost
+
+        # 2. Check for collisions with neighboring cells
+        for dy in [-1, 0, 1]:
+            for dx in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+
+                neighbor_x, neighbor_y = cell_x + dx, cell_y + dy
+
+                if 0 <= neighbor_x < grid_width and 0 <= neighbor_y < grid_height:
+                    neighbor_idx = neighbor_y * grid_width + neighbor_x
+                    neighbor_start_idx = grid_offsets[neighbor_idx]
+                    neighbor_end_idx = grid_offsets[neighbor_idx + 1]
+
+                    # Avoid double-counting by only checking pairs where p1_index < p2_index
+                    for p1_idx_ptr in range(start_idx, end_idx):
+                        p1_index = grid_indices[p1_idx_ptr]
+                        for p2_idx_ptr in range(neighbor_start_idx, neighbor_end_idx):
+                            p2_index = grid_indices[p2_idx_ptr]
+                            if p1_index < p2_index:
+                                pe_change, ke_lost = _resolve_collision_jit(
+                                    p1_index, p2_index, positions, velocities,
+                                    masses, radii, temperatures, heat_coeff, restitution,
+                                    g_const, softening
+                                )
+                                total_pe_change += pe_change
+                                total_ke_lost += ke_lost
+    return total_pe_change, total_ke_lost
+
+@numba.jit(nopython=True)
 def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatures, heat_coeff, restitution, g_const, softening):
     """
     Numba-accelerated inelastic collision and energy conversion for a single pair.
@@ -238,7 +296,12 @@ class ParticleSystem:
             self.cell_size = 10 # A reasonable default
         self.grid_width = int(np.ceil(self.bounds[0] / self.cell_size))
         self.grid_height = int(np.ceil(self.bounds[1] / self.cell_size))
-        self.grid = [[] for _ in range(self.grid_width * self.grid_height)]
+        num_cells = self.grid_width * self.grid_height
+        # grid_offsets[i] stores the starting index in grid_indices for cell i.
+        # The count of items in cell i is grid_offsets[i+1] - grid_offsets[i].
+        self.grid_offsets = np.zeros(num_cells + 1, dtype=np.int32)
+        # grid_indices stores the particle indices, sorted by cell.
+        self.grid_indices = np.zeros(self.num_particles, dtype=np.int32)
 
         self.barnes_hut_theta = config['barnes_hut_theta']
 
@@ -319,54 +382,23 @@ class ParticleSystem:
         particles in the same or adjacent grid cells.
         The core calculation is delegated to a Numba JIT-compiled function.
         """
-        # Reset per-tick energy trackers
-        self.pe_gain_collisions = 0.0
-        self.ke_loss_collisions = 0.0
-
-        heat_coeff = self.config['heat_transfer_coefficient']
-        g_const = self.config['gravity_constant']
-        softening = self.config['softening_factor']
-
-        for cell_idx, cell in enumerate(self.grid):
-            cell_x = cell_idx % self.grid_width
-            cell_y = cell_idx // self.grid_width
-
-            # 1. Check for collisions within the cell itself
-            for i in range(len(cell)):
-                for j in range(i + 1, len(cell)):
-                    pe_change, ke_lost = _resolve_collision_jit(
-                        cell[i], cell[j], self.positions, self.velocities,
-                        self.masses, self.radii, self.temperatures, heat_coeff, self.restitution,
-                        g_const, softening
-                    )
-                    self.pe_gain_collisions += pe_change
-                    self.ke_loss_collisions += ke_lost
-
-            # 2. Check for collisions with all 8 neighboring cells.
-            # This uses the same symmetric check as the gravity calculation to ensure
-            # that all interactions are handled consistently and without artifacts.
-            for dy in [-1, 0, 1]:
-                for dx in [-1, 0, 1]:
-                    if dx == 0 and dy == 0:
-                        continue # Skip the cell itself
-
-                    neighbor_x, neighbor_y = cell_x + dx, cell_y + dy
-
-                    if 0 <= neighbor_x < self.grid_width and 0 <= neighbor_y < self.grid_height:
-                        neighbor_idx = neighbor_y * self.grid_width + neighbor_x
-                        neighbor_cell = self.grid[neighbor_idx]
-
-                        # Avoid double-counting by only checking pairs where p1_index < p2_index
-                        for p1_index in cell:
-                            for p2_index in neighbor_cell:
-                                if p1_index < p2_index:
-                                    pe_change, ke_lost = _resolve_collision_jit(
-                                        p1_index, p2_index, self.positions, self.velocities,
-                                        self.masses, self.radii, self.temperatures, heat_coeff, self.restitution,
-                                        g_const, softening
-                                    )
-                                    self.pe_gain_collisions += pe_change
-                                    self.ke_loss_collisions += ke_lost
+        pe_change, ke_lost = _handle_collisions_jit(
+            self.grid_indices,
+            self.grid_offsets,
+            self.grid_width,
+            self.grid_height,
+            self.positions,
+            self.velocities,
+            self.masses,
+            self.radii,
+            self.temperatures,
+            self.config['heat_transfer_coefficient'],
+            self.restitution,
+            self.config['gravity_constant'],
+            self.config['softening_factor']
+        )
+        self.pe_gain_collisions = pe_change
+        self.ke_loss_collisions = ke_lost
 
     def _check_boundary_collisions(self):
         """
@@ -434,28 +466,36 @@ class ParticleSystem:
 
     def _build_spatial_grid(self):
         """
-        Populates a spatial grid to accelerate collision detection.
+        Populates a spatial grid to accelerate collision detection using a
+        Numba-friendly flattened array format.
 
-        Assigns each particle to a grid cell based on its position. This is an
-        O(n) operation that allows subsequent neighbor searches to be much faster
-        than the naive O(n^2) approach.
+        This O(n) operation involves three passes:
+        1. Count particles per cell.
+        2. Calculate the starting offset for each cell in the final flat array.
+        3. Populate the flat array with particle indices.
         """
-        # Clear the grid for the new frame
-        for cell in self.grid:
-            cell.clear()
+        num_cells = self.grid_width * self.grid_height
+        # 1. Determine cell index for each particle
+        cell_xs = (self.positions[:, 0] / self.cell_size).astype(np.int32)
+        cell_ys = (self.positions[:, 1] / self.cell_size).astype(np.int32)
+        # Clamp to bounds
+        np.clip(cell_xs, 0, self.grid_width - 1, out=cell_xs)
+        np.clip(cell_ys, 0, self.grid_height - 1, out=cell_ys)
+        particle_cell_indices = cell_ys * self.grid_width + cell_xs
 
-        # Place particle indices into grid cells
+        # 2. Count particles in each cell
+        counts = np.bincount(particle_cell_indices, minlength=num_cells)
+
+        # 3. Calculate offsets
+        self.grid_offsets[1:num_cells + 1] = np.cumsum(counts)
+
+        # 4. Populate the grid_indices array
+        current_placement_indices = self.grid_offsets[:-1].copy()
         for i in range(self.num_particles):
-            pos = self.positions[i]
-            cell_x = int(pos[0] / self.cell_size)
-            cell_y = int(pos[1] / self.cell_size)
-
-            # Clamp values to be within grid bounds
-            cell_x = max(0, min(cell_x, self.grid_width - 1))
-            cell_y = max(0, min(cell_y, self.grid_height - 1))
-
-            grid_index = cell_y * self.grid_width + cell_x
-            self.grid[grid_index].append(i)
+            cell_idx = particle_cell_indices[i]
+            placement_idx = current_placement_indices[cell_idx]
+            self.grid_indices[placement_idx] = i
+            current_placement_indices[cell_idx] += 1
 
     def get_total_kinetic_energy(self):
         """

@@ -26,7 +26,7 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
     accumulated_integration_error = 0.0
 
     # --- Profiling Configuration (Rule 11) ---
-    PROFILING_TICKS = 6000
+    PROFILING_TICKS = 1000
 
     while running and tick < PROFILING_TICKS:
         # Event handling
