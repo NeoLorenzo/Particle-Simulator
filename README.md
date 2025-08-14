@@ -1,111 +1,110 @@
 # Particle Simulator
 
-This project is a high-performance 2D particle simulator written in Python. It models the behavior of a large number of particles interacting through a localized approximation of gravity and direct, inelastic collisions. The simulation is built with a focus on physical realism, computational efficiency, and long-term energy conservation.
+This project is a high-performance 2D particle simulator in Python that models a universe of particles governed by gravitational attraction and inelastic collisions. The architecture is designed for physical realism, computational efficiency, and verifiable energy conservation, enabling the emergence of complex behaviors like orbital mechanics, accretion, and thermodynamic equilibrium.
 
-It leverages NumPy for vectorized calculations, Numba for just-in-time (JIT) compilation of performance-critical physics loops, and Pygame for visualization.
+The simulation's performance is achieved through a hybrid optimization strategy, Numba-JIT compilation of core physics loops, and vectorized NumPy operations. Visualization is handled by Pygame, featuring temperature-based coloring and a bloom effect for visual clarity.
 
-## Core Physics & Simulation Logic
+---
 
-The simulation is built on a precise sequence of operations designed to model physical laws accurately while maintaining stability. The core logic is orchestrated by the Velocity Verlet integration method, which dictates the order of calculations for each discrete time step.
+## Core Features
 
-### 1. Numerical Integration (Velocity Verlet)
+*   **N-Body Gravitational Simulation:** Utilizes a Barnes-Hut approximation to efficiently calculate long-range gravitational forces with O(n log n) complexity.
+*   **Energy-Conserving Collision Physics:** Implements a multi-stage inelastic collision model that correctly transforms kinetic and potential energy into thermal energy, adhering to the first law of thermodynamics.
+*   **High-Performance Architecture:** Employs a hybrid spatial partitioning scheme (QuadTree for gravity, Uniform Grid for collisions) and JIT-compiles the hottest computational loops to machine code with Numba.
+*   **Stable Numerical Integration:** Built on the Velocity Verlet integration method to ensure long-term stability and minimize energy drift.
+*   **Configurable & Deterministic:** Simulation parameters are externalized to a `config.json` file, and all random processes are controlled by a single master seed for reproducible results.
 
-To update particle states over time, the simulation employs the **Velocity Verlet** integration method. This technique is chosen over simpler methods like Euler integration for its superior energy conservation over long periods, which is critical for simulation stability.
+---
 
-The update sequence in each tick is as follows:
+## Physics & Simulation Model
 
-1.  **Update Positions (First Half):** Calculate the new positions of particles based on their current velocity and acceleration from the *previous* tick: `p(t+dt) = p(t) + v(t)dt + 0.5a(t)dt²`.
-2.  **Calculate New Forces:** Determine the new gravitational forces (and thus new accelerations, `a(t+dt)`) acting on the particles in their newly calculated positions.
-3.  **Update Velocities:** Calculate the final velocities for the current tick using an average of the old and new accelerations: `v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt))dt`.
+The simulation loop is carefully structured to maintain physical accuracy. Each time step advances by first integrating continuous forces (gravity) and then resolving discrete events (collisions).
 
-After this continuous force integration, discrete events like collisions are handled.
+### 1. Numerical Integration: Velocity Verlet
 
-### 2. Gravitational Interaction (Barnes-Hut Approximation)
+The state of the particles is advanced using the **Velocity Verlet** method, chosen for its excellent energy conservation properties over long simulation runs compared to simpler integrators.
 
-The simulation approximates the gravitational N-body problem using the **Barnes-Hut algorithm**, a scientifically-grounded abstraction that reduces the computational complexity from O(n²) to O(n log n). This allows for the efficient simulation of long-range gravitational forces between thousands of particles.
+> The update sequence per tick is:
+> 1.  **Update Position:** `p(t+dt) = p(t) + v(t)dt + 0.5a(t)dt²`
+> 2.  **Update Spatial Structures:** The QuadTree and spatial grid are rebuilt based on the new positions.
+> 3.  **Calculate New Forces:** New gravitational accelerations `a(t+dt)` are computed using the updated spatial structures.
+> 4.  **Update Velocity:** `v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt))dt`
 
-The force between any two particles is based on Newton's Law of Universal Gravitation, with a key modification for numerical stability:
+### 2. Gravitational Interaction: Barnes-Hut Approximation
 
-**F = G * (m1 * m2) / (r² + s)**
+Gravitational forces are modeled using a Barnes-Hut N-body simulation. This algorithm avoids the O(n²) complexity of direct summation by treating distant clusters of particles as a single center of mass.
 
-Where:
-*   **F** is the magnitude of the gravitational force.
-*   **G** is the `gravity_constant` from `config.json`.
-*   **m1** and **m2** are the masses of the two particles.
-*   **r²** is the square of the distance between them.
-*   **s** is a `softening_factor` from `config.json`. This prevents the force from becoming infinite when particles get extremely close, avoiding numerical instability and the "slingshot" effect.
+*   **QuadTree Partitioning:** The simulation space is recursively divided into a QuadTree.
+*   **Center of Mass Calculation:** The total mass and center of mass are computed for each node in the tree.
+*   **Force Calculation:** To calculate the force on a particle, the tree is traversed. If a node is sufficiently far away (determined by the `barnes_hut_theta` parameter), its entire mass is used in a single force calculation. Otherwise, the algorithm traverses deeper into the tree.
+*   **Softening Factor:** To prevent numerical instability from near-infinite forces between close particles, a `softening_factor` is added to the distance term: `F = G * (m1*m2) / (r² + s)`.
 
-The Barnes-Hut algorithm works as follows:
-1.  A **QuadTree** is constructed each tick, spatially partitioning all particles into a hierarchy of nodes.
-2.  The center of mass and total mass are calculated for each node in the tree.
-3.  To calculate the net force on a given particle, the tree is traversed from the root.
-4.  For each node, the ratio of the node's width to the distance from the particle (`width / dist`) is calculated.
-5.  If this ratio is below a certain threshold (`barnes_hut_theta` in `config.json`), the entire cluster of particles within that node is treated as a single, massive body located at the node's center of mass. A single gravitational force calculation is performed.
-6.  If the ratio is above the threshold, the node is too close to be approximated, and the algorithm recursively traverses its children nodes.
-7.  If a leaf node is reached, direct force calculations are performed with the individual particles inside it.
+### 3. Collision Dynamics & Thermodynamics
 
-### 3. Inelastic Collisions and Energy Transformation
+Collisions are modeled as discrete, inelastic events that strictly conserve the total energy of the interacting pair by converting it between kinetic, potential, and thermal forms.
 
-Particle collisions are complex events that transform energy between potential, kinetic, and thermal forms. The simulation models this using a multi-step process within the `_resolve_collision_jit` function. Collisions are **inelastic**, governed by the `coefficient_of_restitution` in `config.json`.
-
-The collision resolution process is as follows:
-
-1.  **Overlap Resolution:** When two particles are found to be overlapping, they are first pushed apart along the collision normal until their edges are just touching. This positional correction is weighted by mass to conserve the center of mass of the pair.
-2.  **Potential Energy Accounting:** Pushing the particles apart changes their distance, which in turn changes the gravitational potential energy of the pair. This `pe_change` is carefully calculated. If particles are pushed apart, potential energy increases (becomes less negative).
-3.  **Inelastic Velocity Update:** The particle velocities are then updated. The component of their relative velocity along the collision normal is reflected and scaled by the `coefficient_of_restitution`. A value of 1.0 would be perfectly elastic, while a value of 0.0 would be perfectly inelastic.
-4.  **Kinetic to Thermal Energy Conversion:** Because the collision is inelastic (restitution < 1.0), kinetic energy is not conserved. The total kinetic energy of the pair before and after the velocity update is measured, and the difference is calculated as `ke_lost`.
-5.  **Net Heat Generation:** The core principle of energy conservation within a collision is `heat_generated = ke_lost - pe_change`. The energy "cost" of pushing particles apart (the potential energy gain) is paid for by the kinetic energy lost during the inelastic impact. This net energy change is converted into thermal energy and distributed between the two colliding particles, increasing their temperature.
+> The core principle of energy transformation is:
+>
+> `heat_generated = ke_lost - pe_change`
+>
+> The energy cost of pushing particles apart (potential energy gain) is subtracted from the kinetic energy lost during the inelastic impact. This net energy is then distributed as thermal energy, raising the particles' temperatures.
 
 ### 4. System-Wide Energy Conservation
 
-While the collision model is carefully designed to conserve energy and the Velocity Verlet integrator is stable, the discrete nature of the simulation (and the approximation of using a spatial grid) can lead to small numerical errors that cause the total system energy to drift over time.
+To counteract minor numerical errors inherent in discrete simulations, a global energy correction mechanism is in place. The total system energy (Kinetic + Potential + Thermal) is tracked, and any drift is accumulated. Periodically, this accumulated error is injected back into (or removed from) the system's total thermal energy, ensuring that the simulation remains energy-neutral over extended periods.
 
-The simulation actively corrects for this drift:
-1.  The total energy of the system (Kinetic + Potential + Thermal) is measured before and after each physics tick.
-2.  The difference (`total_delta_this_tick`) represents the numerical integration error for that step.
-3.  This error is accumulated over 100 ticks.
-4.  Every 100 ticks, a `thermal_correction` is applied. The exact amount of energy that was artificially gained or lost due to numerical error is subtracted from or added to the system's total thermal energy, ensuring the simulation's total energy remains constant over long periods.
+---
 
-## Computational Optimizations for Performance
+## Computational Architecture & Optimizations
 
-A naive O(n²) implementation would be too slow. This simulation uses several techniques to achieve high performance.
+### 1. Hybrid Spatial Partitioning
 
-### 1. Barnes-Hut Algorithm for Gravity
+The simulation employs a deliberate, dual-pronged strategy for spatial partitioning, using the optimal data structure for each type of physical interaction:
+*   **QuadTree (Barnes-Hut):** Ideal for the hierarchical approximations needed for long-range gravity. The entire tree construction and mass calculation process is JIT-compiled with Numba for maximum efficiency.
+*   **Uniform Spatial Grid:** Used for broad-phase collision detection. This structure is optimal for identifying spatially local neighbors for short-range interactions, reducing the complexity of collision checks from O(n²) to nearly O(n).
 
-The primary optimization for the N-body gravity calculation is the **Barnes-Hut algorithm**, implemented using a **QuadTree**. By treating distant particle clusters as single points of mass, it reduces the complexity of calculating gravitational forces from O(n²) to O(n log n), enabling the simulation of long-range interactions that would otherwise be computationally prohibitive.
+### 2. Just-in-Time (JIT) Compilation
 
-### 2. Spatial Grid for Broad-Phase Collision Detection
+The most computationally intensive parts of the simulation are written in a restricted subset of Python and compiled to optimized machine code at runtime using **Numba**. This includes the entire Barnes-Hut gravity calculation, QuadTree construction, and the collision resolution logic.
 
-For discrete collisions, which are short-range interactions, the simulation space is partitioned into a uniform grid. The cell size is determined by a heuristic based on the maximum particle radius and a `grid_cell_size_multiplier` in the config. When checking for collisions, a particle only interacts with other particles in its own grid cell and its 8 immediate neighbors. This "broad-phase" check drastically reduces the number of pairs that need to be considered for a direct collision check, lowering the complexity from O(n²) to approximately O(n\*k), where *k* is the average number of particles in the local neighborhood.
+### 3. Vectorization
 
-### 2. Just-in-Time (JIT) Compilation with Numba
+Particle data is stored in **NumPy** arrays, enabling vectorized operations (Structure of Arrays) for integration steps, boundary checks, and property calculations. This avoids slow Python loops and leverages optimized, low-level library code.
 
-The most intensive calculations—the loops that compute gravity and resolve collisions for pairs of particles—are implemented in dedicated functions decorated with `@numba.jit(nopython=True)`. Numba compiles these Python functions into highly optimized machine code at runtime, bypassing the Python interpreter's overhead and yielding performance comparable to C or Fortran.
+---
 
-### 3. Vectorization with NumPy
+## Visualization
 
-Particle data (positions, velocities, masses, etc.) is stored in NumPy arrays. This allows for vectorized operations that apply to all particles simultaneously, which is significantly faster than iterating in Python loops. This is used for tasks like the Velocity Verlet integration, boundary collisions, and calculating particle colors from their temperatures.
+*   **Rendering:** The simulation is visualized using Pygame.
+*   **Thermodynamic Coloring:** Particle colors are determined by their temperature, mapping a physical property to a visual one. The gradient ranges from red (cool) through yellow to white (hot).
+*   **Bloom Effect:** A post-processing bloom effect is applied to bright, hot particles to create a glow, enhancing visual feedback on the system's energy distribution.
+
+---
 
 ## How to Run the Simulation
 
-1.  **Prerequisites:**
-    *   Python 3.x
-    *   Pygame
-    *   NumPy
-    *   Numba
+### 1. Prerequisites
+*   Python 3.x
+*   Pygame
+*   NumPy
+*   Numba
 
-2.  **Configuration:**
-    *   `constants.py`: For application-level settings like screen resolution (`WIDTH`, `HEIGHT`) and target framerate (`FPS`).
-    *   `config.json`: To change simulation-specific parameters. Key parameters include:
-        *   `particle_count`: The number of particles to simulate.
-        *   `gravity_constant`: The strength of gravity.
-        *   `softening_factor`: Prevents extreme forces at close range.
-        *   `barnes_hut_theta`: Controls the accuracy of the Barnes-Hut approximation. A lower value (e.g., 0.3) is more accurate but slower. A higher value (e.g., 0.8) is faster but less accurate.
-        *   `coefficient_of_restitution`: Controls the "bounciness" of collisions (0.0 to 1.0).
-        *   `grid_cell_size_multiplier`: Adjusts the size of the spatial grid cells for collision detection performance tuning.
+### 2. Configuration
+Simulation behavior is controlled by two files:
+*   `constants.py`: Defines static application values like screen resolution and framerate.
+*   `config.json`: Controls the parameters of the simulation experiment.
 
-3.  **Execution:**
-    *   Run the main script from your terminal:
-        ```bash
-        python main.py
-        ```
+| Parameter | Description |
+| :--- | :--- |
+| `particle_count` | The number of particles to simulate. |
+| `gravity_constant` | The strength of the gravitational force. |
+| `softening_factor` | Prevents extreme forces at close range to maintain stability. |
+| `barnes_hut_theta` | Controls Barnes-Hut accuracy. Lower is more accurate but slower. |
+| `coefficient_of_restitution` | The "bounciness" of collisions (0.0 = inelastic, 1.0 = elastic). |
+| `grid_cell_size_multiplier`| Tunes the spatial grid cell size for collision detection performance. |
+
+### 3. Execution
+Run the main script from your terminal:
+```bash
+python main.py
+```
