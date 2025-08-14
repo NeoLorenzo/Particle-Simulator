@@ -13,17 +13,17 @@ logger = logging.getLogger("particle_sim")
 # They are deliberately kept outside the ParticleSystem class and operate only on
 # NumPy arrays and simple scalar values, as required by Numba's nopython mode.
 
-@numba.jit(nopython=True)
-def _calculate_gravity_barnes_hut_jit(num_particles, positions, masses, accelerations, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list):
+@numba.jit(nopython=True, fastmath=True)
+def _calculate_gravity_barnes_hut_jit(num_particles, positions, masses, inverse_masses, accelerations, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list):
     """
     Numba-accelerated main loop for Barnes-Hut gravity calculation.
     Iterates through each particle and initiates the tree traversal.
     """
     for i in range(num_particles):
         net_force = _traverse_tree_jit(i, 0, positions, masses, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list)
-        accelerations[i] = net_force / masses[i][0]
+        accelerations[i] = net_force * inverse_masses[i, 0]
 
-@numba.jit(nopython=True)
+@numba.jit(nopython=True, fastmath=True)
 def _calculate_potential_energy_jit(node_idx, node_data, node_children, g_const, softening):
     """
     Recursively calculates the total potential energy of the system using the
@@ -65,50 +65,58 @@ def _calculate_potential_energy_jit(node_idx, node_data, node_children, g_const,
     # interaction energy between its children.
     return total_pe
 
-@numba.jit(nopython=True)
+@numba.jit(nopython=True, fastmath=True)
 def _traverse_tree_jit(p_idx, node_idx, positions, masses, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list):
     """
     Numba-accelerated recursive traversal of the flattened QuadTree arrays.
     This function calculates the net force on a single particle (p_idx).
+    (Optimized to remove array allocations and use scalar math)
     """
     node_mass, com_x, com_y, width = node_data[node_idx]
     net_force = np.zeros(2)
 
-    # Check if the node is internal or a leaf by looking at its children pointers
     is_leaf = node_children[node_idx, 0] == -1
 
     if not is_leaf:
-        # It's an internal node
-        p_pos = positions[p_idx]
-        node_com = np.array([com_x, com_y])
-        diff = p_pos - node_com
-        dist = np.sqrt(np.sum(diff**2))
+        p_pos_x = positions[p_idx, 0]
+        p_pos_y = positions[p_idx, 1]
+        diff_x = com_x - p_pos_x
+        diff_y = com_y - p_pos_y
+        dist_sq = diff_x**2 + diff_y**2
 
-        if dist > 0 and (width / dist) < theta:
-            # Node is far enough away, treat as a single body
-            force_vec = (g_const * masses[p_idx][0] * node_mass * diff) / (dist**3 + softening)
-            return -force_vec # Return force on the particle
+        if dist_sq > 0 and (width * width) < (theta * theta * dist_sq):
+            dist_soft_sq = dist_sq + softening
+            inv_dist_soft_cubed = dist_soft_sq**(-1.5)
+            force_scalar = g_const * masses[p_idx, 0] * node_mass * inv_dist_soft_cubed
+            net_force[0] = force_scalar * diff_x
+            net_force[1] = force_scalar * diff_y
+            return net_force
         else:
-            # Node is too close, recurse into children
             for child_node_idx in node_children[node_idx]:
-                if child_node_idx != -1 and node_data[child_node_idx][0] > 0:
+                if child_node_idx != -1 and node_data[child_node_idx, 0] > 0:
                     net_force += _traverse_tree_jit(p_idx, child_node_idx, positions, masses, g_const, softening, theta, node_data, node_children, node_particles_map, particle_list)
             return net_force
     else:
-        # It's a leaf node, calculate direct forces from its particles
         start, count, _ = node_particles_map[node_idx]
         if count > 0:
             for i in range(count):
                 other_p_idx = particle_list[start + i]
                 if p_idx != other_p_idx:
-                    p1_pos = positions[p_idx]
-                    p2_pos = positions[other_p_idx]
-                    diff = p2_pos - p1_pos
-                    dist_sq = np.sum(diff**2)
+                    p1_pos_x = positions[p_idx, 0]
+                    p1_pos_y = positions[p_idx, 1]
+                    p2_pos_x = positions[other_p_idx, 0]
+                    p2_pos_y = positions[other_p_idx, 1]
+                    
+                    diff_x = p2_pos_x - p1_pos_x
+                    diff_y = p2_pos_y - p1_pos_y
+                    dist_sq = diff_x**2 + diff_y**2
+
                     if dist_sq > 0:
-                        force_mag = (g_const * masses[p_idx][0] * masses[other_p_idx][0]) / (dist_sq + softening)
-                        dist = np.sqrt(dist_sq)
-                        net_force += force_mag * (diff / dist)
+                        dist_soft_sq = dist_sq + softening
+                        inv_dist_soft_cubed = dist_soft_sq**(-1.5)
+                        force_scalar = g_const * masses[p_idx, 0] * masses[other_p_idx, 0] * inv_dist_soft_cubed
+                        net_force[0] += force_scalar * diff_x
+                        net_force[1] += force_scalar * diff_y
         return net_force
 
 @numba.jit(nopython=True)
@@ -125,7 +133,7 @@ def _calculate_potential_energy_for_pair_jit(i, j, positions, masses, g_const, s
     potential = (-g_const * mass_i * mass_j) / np.sqrt(dist_sq + softening)
     return potential
 
-@numba.jit(nopython=True)
+@numba.jit(nopython=True, fastmath=True)
 def _handle_collisions_jit(grid_indices, grid_offsets, grid_width, grid_height, positions, velocities, masses, radii, temperatures, heat_coeff, restitution, g_const, softening):
     """
     Numba-accelerated broad-phase and narrow-phase collision detection and resolution.
@@ -281,6 +289,7 @@ class ParticleSystem:
         self.velocities = np.zeros((num_particles, 2), dtype=float)
         self.accelerations = np.zeros((num_particles, 2), dtype=float)
         self.masses = rng.uniform(config['min_mass'], config['max_mass'], (num_particles, 1))
+        self.inverse_masses = 1.0 / self.masses
         self.temperatures = rng.uniform(config['min_temp'], config['max_temp'], (num_particles, 1))
         self.radii = np.sqrt(self.masses).astype(int)
 
@@ -365,6 +374,7 @@ class ParticleSystem:
             self.num_particles,
             self.positions,
             self.masses,
+            self.inverse_masses,
             self.accelerations,
             self.config['gravity_constant'],
             self.config['softening_factor'],
