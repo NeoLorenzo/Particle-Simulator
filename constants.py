@@ -30,7 +30,7 @@ TITLE = "Particle Simulator"
 # Color Mapping for Visualization
 # Defines the temperature range for rendering particles.
 COLOR_MIN_TEMP = 0.0      # Temperature that maps to the "coldest" color.
-COLOR_MAX_TEMP = 5.0    # Temperature that maps to the "hottest" color.
+COLOR_MAX_TEMP = 1.0    # Temperature that maps to the "hottest" color.
 
 # Defines the color spectrum as a series of keyframes.
 # Each keyframe is a tuple: (normalized_position, (R, G, B) color).

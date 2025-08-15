@@ -268,6 +268,74 @@ def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatu
     return pe_change, ke_lost, heat_generated
 
 
+@numba.jit(nopython=True, fastmath=True)
+def _handle_heat_transfer_jit(grid_indices, grid_offsets, grid_width, grid_height, positions, masses, radii, temperatures, heat_coeff, delta_temps):
+    """
+    Numba-accelerated heat transfer between adjacent particles.
+    This is an abstraction of thermal conduction. The rate of energy transfer
+    is proportional to the temperature difference, governed by the heat_coeff.
+    To prevent race conditions, temperature changes are accumulated in the
+    `delta_temps` array and applied in a single step outside this function.
+    """
+    num_cells = grid_width * grid_height
+    for cell_idx in range(num_cells):
+        cell_x = cell_idx % grid_width
+        cell_y = cell_idx // grid_width
+
+        start_idx = grid_offsets[cell_idx]
+        end_idx = grid_offsets[cell_idx + 1]
+
+        # 1. Check pairs within the cell
+        for i in range(start_idx, end_idx):
+            p1_index = grid_indices[i]
+            for j in range(i + 1, end_idx):
+                p2_index = grid_indices[j]
+                _transfer_heat_between_pair_jit(p1_index, p2_index, positions, masses, radii, temperatures, heat_coeff, delta_temps)
+
+        # 2. Check pairs with neighboring cells
+        for dy in [-1, 0, 1]:
+            for dx in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                neighbor_x, neighbor_y = cell_x + dx, cell_y + dy
+                if 0 <= neighbor_x < grid_width and 0 <= neighbor_y < grid_height:
+                    neighbor_idx = neighbor_y * grid_width + neighbor_x
+                    neighbor_start_idx = grid_offsets[neighbor_idx]
+                    neighbor_end_idx = grid_offsets[neighbor_idx + 1]
+                    for p1_idx_ptr in range(start_idx, end_idx):
+                        p1_index = grid_indices[p1_idx_ptr]
+                        for p2_idx_ptr in range(neighbor_start_idx, neighbor_end_idx):
+                            p2_index = grid_indices[p2_idx_ptr]
+                            if p1_index < p2_index: # Avoid double counting
+                                _transfer_heat_between_pair_jit(p1_index, p2_index, positions, masses, radii, temperatures, heat_coeff, delta_temps)
+
+@numba.jit(nopython=True, fastmath=True)
+def _transfer_heat_between_pair_jit(p1_idx, p2_idx, positions, masses, radii, temperatures, heat_coeff, delta_temps):
+    """Calculates and stages heat transfer for a single pair of particles."""
+    pos_i, pos_j = positions[p1_idx], positions[p2_idx]
+    rad_i, rad_j = radii[p1_idx, 0], radii[p2_idx, 0]
+
+    distance_sq = np.sum((pos_j - pos_i)**2)
+    contact_dist = rad_i + rad_j
+
+    # Only transfer heat if particles are touching
+    if distance_sq < contact_dist**2:
+        temp_i = temperatures[p1_idx, 0]
+        temp_j = temperatures[p2_idx, 0]
+        temp_diff = temp_i - temp_j
+
+        # Proceed only if there is a temperature difference
+        if temp_diff != 0:
+            # The amount of energy to transfer is proportional to the difference.
+            # This is a simplified model of Newton's law of cooling/conduction.
+            energy_to_transfer = heat_coeff * temp_diff
+
+            # The change in temperature is delta_E / mass.
+            # We stage the changes in delta_temps to be applied later.
+            delta_temps[p1_idx, 0] -= energy_to_transfer / masses[p1_idx, 0]
+            delta_temps[p2_idx, 0] += energy_to_transfer / masses[p2_idx, 0]
+
+
 class ParticleSystem:
     """
     Manages the state and physics of all particles in the simulation using
@@ -405,6 +473,30 @@ class ParticleSystem:
         self.ke_loss_collisions = total_ke_lost
         self.heat_generated_collisions = total_heat_generated
 
+    def _handle_heat_transfer(self):
+        """
+        Manages the heat transfer process by calling the JIT-compiled function
+        and applying the resulting temperature changes to the system.
+        """
+        # Create an array to accumulate temperature changes for this tick.
+        delta_temps = np.zeros_like(self.temperatures)
+
+        _handle_heat_transfer_jit(
+            self.grid_indices,
+            self.grid_offsets,
+            self.grid_width,
+            self.grid_height,
+            self.positions,
+            self.masses,
+            self.radii,
+            self.temperatures,
+            self.config['heat_transfer_coefficient'],
+            delta_temps  # Pass the array to be modified in-place
+        )
+
+        # Apply the accumulated changes in a single vectorized operation.
+        self.temperatures += delta_temps
+
     def _check_boundary_collisions(self):
         """
         Vectorized boundary collision check.
@@ -453,8 +545,14 @@ class ParticleSystem:
         # The grid is already up-to-date from the step above.
         self._handle_collisions()
 
+        # Handle heat transfer between adjacent particles
+        self._handle_heat_transfer()
+
         # Handle boundary interactions as the final step
         self._check_boundary_collisions()
+
+        # Handle explosions as the absolute final step, as it removes particles
+        self._handle_explosions()
 
     def _interpolate_color(self, norm_temp: float):
         """
@@ -516,6 +614,109 @@ class ParticleSystem:
                 (int(self.positions[i, 0]), int(self.positions[i, 1])),
                 int(self.radii[i, 0])
             )
+
+    def _get_neighbors_from_grid(self, p_idx: int):
+        """
+        Finds all neighboring particles for a given particle index by searching
+        its own grid cell and the 8 adjacent cells.
+        """
+        p_pos = self.positions[p_idx]
+        cell_x = int(p_pos[0] / self.cell_size)
+        cell_y = int(p_pos[1] / self.cell_size)
+
+        neighbor_indices = []
+        # Loop over the 3x3 grid of cells centered on the particle's cell
+        for dy in [-1, 0, 1]:
+            for dx in [-1, 0, 1]:
+                check_x, check_y = cell_x + dx, cell_y + dy
+
+                if 0 <= check_x < self.grid_width and 0 <= check_y < self.grid_height:
+                    cell_idx = check_y * self.grid_width + check_x
+                    start = self.grid_offsets[cell_idx]
+                    end = self.grid_offsets[cell_idx + 1]
+                    for i in range(start, end):
+                        neighbor_idx = self.grid_indices[i]
+                        if neighbor_idx != p_idx:
+                            neighbor_indices.append(neighbor_idx)
+        return np.array(list(set(neighbor_indices)), dtype=np.int32)
+
+    def _handle_explosions(self):
+        """
+        Identifies overheated particles, converts their thermal energy into
+        kinetic energy for their neighbors, and removes them from the simulation.
+        This is an abstraction of a supernova-like event.
+        """
+        # Find particles that are hot enough to explode
+        exploding_mask = self.temperatures.flatten() >= constants.COLOR_MAX_TEMP
+        exploding_indices = np.where(exploding_mask)[0]
+
+        if len(exploding_indices) == 0:
+            return # No explosions this tick
+
+        exploding_set = set(exploding_indices)
+
+        # Process each explosion's effects on its neighbors
+        for p_idx in exploding_indices:
+            # Get thermal energy to be converted to kinetic energy.
+            # We index with [0] to extract the scalar value from the NumPy array.
+            explosion_energy = (self.masses[p_idx] * self.temperatures[p_idx])[0]
+
+            # Find neighbors using the spatial grid
+            neighbor_indices = self._get_neighbors_from_grid(p_idx)
+
+            # A neighbor cannot be another exploding particle
+            valid_neighbor_mask = np.array([n_idx not in exploding_set for n_idx in neighbor_indices])
+            valid_neighbors = neighbor_indices[valid_neighbor_mask]
+
+            if len(valid_neighbors) == 0:
+                logger.warning(f"Particle {p_idx} exploded with no valid neighbors. Energy was lost.")
+                continue
+
+            logger.info(
+                f"Particle {p_idx} exploded with {explosion_energy:.1f} thermal energy, "
+                f"affecting {len(valid_neighbors)} neighbors."
+            )
+
+            # Distribute energy based on an inverse-square distance law
+            p_pos = self.positions[p_idx]
+            neighbors_pos = self.positions[valid_neighbors]
+            diffs = neighbors_pos - p_pos
+            dists_sq = np.sum(diffs**2, axis=1)
+            dists_sq[dists_sq == 0] = 1e-6 # Prevent division by zero
+
+            weights = 1.0 / dists_sq
+            total_weight = np.sum(weights)
+            normalized_weights = weights / total_weight
+
+            energy_shares = explosion_energy * normalized_weights
+
+            # Convert shared energy to velocity change for each neighbor
+            # E = 0.5 * m * v^2  =>  v = sqrt(2 * E / m)
+            delta_v_mags = np.sqrt(2 * energy_shares / self.masses[valid_neighbors].flatten())
+
+            dists = np.sqrt(dists_sq)
+            direction_vectors = diffs / dists[:, np.newaxis]
+
+            # Apply the impulse to the neighbors' velocities
+            self.velocities[valid_neighbors] += direction_vectors * delta_v_mags[:, np.newaxis]
+
+        # --- Remove all exploded particles from the simulation ---
+        survival_mask = ~exploding_mask
+        self.positions = self.positions[survival_mask]
+        self.velocities = self.velocities[survival_mask]
+        self.accelerations = self.accelerations[survival_mask]
+        self.masses = self.masses[survival_mask]
+        self.inverse_masses = self.inverse_masses[survival_mask]
+        self.temperatures = self.temperatures[survival_mask]
+        self.radii = self.radii[survival_mask]
+        
+        old_count = self.num_particles
+        self.num_particles = self.positions.shape[0]
+        
+        logger.info(
+            f"{old_count - self.num_particles} particle(s) removed by explosion. "
+            f"New count: {self.num_particles}."
+        )
 
     def _build_spatial_grid(self):
         """
