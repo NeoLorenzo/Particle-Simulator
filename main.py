@@ -24,7 +24,6 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
     accumulated_pe_gain = 0.0
     accumulated_ke_loss = 0.0
     accumulated_heat = 0.0
-    accumulated_integration_error = 0.0
 
     # --- Profiling Configuration (Rule 11) ---
     PROFILING_TICKS = 100000
@@ -48,19 +47,13 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
             particle_system.get_total_thermal_energy()
         )
 
-        # --- Calculate and accumulate energy changes for this tick ---
-        total_delta_this_tick = energy_after_tick - energy_before_tick
-        integration_error_this_tick = total_delta_this_tick
-        accumulated_integration_error += integration_error_this_tick
+        # --- Accumulate energy changes from discrete events for logging ---
         accumulated_pe_gain += particle_system.pe_gain_collisions
         accumulated_ke_loss += particle_system.ke_loss_collisions
         accumulated_heat += particle_system.heat_generated_collisions
 
         # --- Logging (Rule 2.4, throttled) ---
         if tick % 100 == 0:
-            thermal_correction = -accumulated_integration_error
-            particle_system.apply_global_temperature_correction(thermal_correction)
-
             ke = particle_system.get_total_kinetic_energy()
             te = particle_system.get_total_thermal_energy()
             pe = particle_system.get_total_potential_energy()
@@ -68,7 +61,8 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
 
             if first_log:
                 delta_e = 0.0
-                last_logged_energy = energy_before_tick
+                # Set the initial energy baseline correctly on the first log
+                last_logged_energy = total_energy
                 first_log = False
             else:
                 delta_e = total_energy - last_logged_energy
@@ -82,8 +76,6 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
                 f"Potential={pe:.2f}, "
                 f"TotalSystemEnergy={total_energy:.2f}, "
                 f"Delta_E={delta_e:+.2f}, "
-                f"AccumulatedIntegrationError={accumulated_integration_error:+.2f}, "
-                f"ThermalCorrection={thermal_correction:+.2f}, "
                 f"AccumulatedKE_Loss={accumulated_ke_loss:+.2f}, "
                 f"AccumulatedPE_Gain={accumulated_pe_gain:+.2f}, "
                 f"AccumulatedHeat={accumulated_heat:+.2f}"
@@ -92,7 +84,6 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
             accumulated_pe_gain = 0.0
             accumulated_ke_loss = 0.0
             accumulated_heat = 0.0
-            accumulated_integration_error = 0.0
 
         # --- Drawing ---
         trail_surface.fill(constants.TRAIL_EFFECT_COLOR)

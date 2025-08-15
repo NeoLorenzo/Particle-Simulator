@@ -794,24 +794,3 @@ class ParticleSystem:
             self.config['gravity_constant'],
             self.config['softening_factor']
         )
-
-    def apply_global_temperature_correction(self, energy_change: float):
-        """
-        Applies a global energy correction by distributing it as thermal energy
-        across all particles, weighted by their mass.
-
-        Data Contract:
-        - Inputs: energy_change (float) - The amount of energy to add (if > 0) or remove (if < 0).
-        - Outputs: None. Modifies self.temperatures in place.
-        - Side Effects: Changes the thermal energy of the entire system.
-        - Invariants: Total mass must be greater than zero.
-        """
-        if self.masses.sum() > 0:
-            # The change in thermal energy is E = m * T, so delta_T = E / m.
-            # We apply this change across all particles.
-            total_mass = np.sum(self.masses)
-            # This is a simplification. A true mass-weighting would be more complex.
-            # For now, we find the average temperature change and apply it.
-            # E = M_total * T_avg_change -> T_avg_change = E / M_total
-            temp_change = energy_change / total_mass
-            self.temperatures += temp_change

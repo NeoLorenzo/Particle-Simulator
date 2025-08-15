@@ -19,6 +19,6 @@
     "grid_cell_size_multiplier": 10.0,
     "position_correction_factor": 1.05,
     "collision_solver_iterations": 1,
-    "explosion_efficiency": 0.1
+    "explosion_efficiency": 0.5
   }
 }
