@@ -1,4 +1,29 @@
-# Particle Simulator
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
+  <img src="https://img.shields.io/badge/PyGame-6E7072?style=for-the-badge&logo=pygame&logoColor=white" alt="Pygame"/>
+  <img src="https://img.shields.io/badge/Numpy-013243?style=for-the-badge&logo=numpy&logoColor=white" alt="NumPy"/>
+  <img src="https://img.shields.io/badge/Powered%20by-Numba-blueviolet?style=for-the-badge" alt="Numba"/>
+  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License: MIT"/>
+</p>
+
+<h1 align="center">Particle Simulator</h1>
+
+<p align="center">
+  <img src="./assets/simulation_demo.gif" width="80%">
+</p>
+
+<p align="center">
+  <strong><a href="https://NeoLorenzo.github.io/Particle-Simulator/timelapse.html" target="_blank">Click Here to Watch the Full High-Resolution Timelapse Video</a></strong>
+</p>
+
+<p align="center">
+  <a href="#core-features">Core Features</a> •
+  <a href="#physics--simulation-model">Physics Model</a> •
+  <a href="#computational-architecture--optimizations">Architecture</a> •
+  <a href="#how-to-run-the-simulation">How to Run</a>
+</p>
+
+---
 
 > This project is a high-performance 2D particle simulator engineered in Python to model complex astrophysical phenomena. The simulation universe is populated by particles governed by first-principles physics, including gravitational attraction, inelastic collisions, and thermodynamic evolution. Its architecture is meticulously designed for physical realism, computational efficiency, and numerical stability, enabling the emergence of sophisticated behaviors such as orbital mechanics, accretion disk formation, and stellar explosions.
 
@@ -25,63 +50,61 @@ The simulation loop is rigorously structured to maintain physical fidelity. Each
 
 <details>
 <summary><strong>1. Numerical Integration: Velocity Verlet</strong></summary>
-
 <br>
-The temporal evolution of the particle system is computed using the **Velocity Verlet** method. This symplectic integrator is selected for its exceptional energy and momentum conservation properties over extended simulation runs, a critical feature for maintaining the stability of orbital systems.
+The temporal evolution of the particle system is computed using the <strong>Velocity Verlet</strong> method. This symplectic integrator is selected for its exceptional energy and momentum conservation properties over extended simulation runs, a critical feature for maintaining the stability of orbital systems.
 
-The update sequence per tick is:
-1.  **Update Position:** `p(t+dt) = p(t) + v(t)dt + 0.5a(t)dt²`
-2.  **Rebuild Spatial Structures:** The QuadTree and spatial grid are reconstructed based on the new particle positions.
-3.  **Calculate New Forces:** New gravitational accelerations `a(t+dt)` are computed using the updated spatial hierarchies.
-4.  **Update Velocity:** `v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt))dt`
-<br>
-
+The update sequence per tick is as follows:
+<ul>
+    <li><strong>Update Position:</strong> <code>p(t+dt) = p(t) + v(t)dt + 0.5a(t)dt²</code></li>
+    <li><strong>Rebuild Spatial Structures:</strong> The QuadTree and spatial grid are reconstructed based on the new particle positions.</li>
+    <li><strong>Calculate New Forces:</strong> New gravitational accelerations <code>a(t+dt)</code> are computed using the updated spatial hierarchies.</li>
+    <li><strong>Update Velocity:</strong> <code>v(t+dt) = v(t) + 0.5 * (a(t) + a(t+dt))dt</code></li>
+</ul>
 </details>
 
 <details>
 <summary><strong>2. Gravitational Interaction: Barnes-Hut Approximation</strong></summary>
-
 <br>
-Gravitational forces are modeled using a Barnes-Hut N-body simulation, an elegant approximation that reduces the computational complexity from O(n²) to O(n log n).
-
-*   **Hierarchical Partitioning:** The simulation space is recursively subdivided into a QuadTree data structure.
-*   **Center of Mass Calculation:** The aggregate mass and center of mass are computed for each node in the tree in a single post-order traversal.
-*   **Multipole Expansion:** To calculate the net force on a particle, the tree is traversed. If a node is sufficiently distant (governed by the `barnes_hut_theta` parameter, analogous to a multipole acceptance criterion), its entire mass is treated as a single point source. Otherwise, the algorithm descends to a deeper level of the hierarchy.
-*   **Gravitational Softening:** To prevent numerical instability and singularities from near-infinite forces between close particles, a `softening_factor` is introduced to the denominator of the force equation: `F = G * (m₁*m₂) / (r² + s)`.
-<br>
-
+Gravitational forces are modeled using a <strong>Barnes-Hut N-body simulation</strong>, an elegant approximation that reduces the computational complexity from O(n²) to O(n log n).
+<ul>
+    <li><strong>Hierarchical Partitioning:</strong> The simulation space is recursively subdivided into a QuadTree data structure.</li>
+    <li><strong>Center of Mass Calculation:</strong> The aggregate mass and center of mass are computed for each node in the tree in a single post-order traversal.</li>
+    <li><strong>Multipole Expansion:</strong> To calculate the net force on a particle, the tree is traversed. If a node is sufficiently distant (governed by the <code>barnes_hut_theta</code> parameter, analogous to a multipole acceptance criterion), its entire mass is treated as a single point source. Otherwise, the algorithm descends to a deeper level of the hierarchy.</li>
+    <li><strong>Gravitational Softening:</strong> To prevent numerical instability and singularities from near-infinite forces between close particles, a <code>softening_factor</code> is introduced to the denominator of the force equation:
+    <blockquote>
+    F = G * (m₁*m₂) / (r² + s)
+    </blockquote>
+    </li>
+</ul>
 </details>
 
 <details>
 <summary><strong>3. Collision Dynamics & Energy Conservation</strong></summary>
-
 <br>
 Collisions are modeled as discrete, inelastic events that strictly conserve the total energy of an interacting pair by transforming it between kinetic, potential, and thermal forms.
 
-The resolution process within the `_resolve_collision_jit` kernel is:
-1.  **Overlap Resolution:** Spatially overlapping particles are repositioned along their normal vector, preserving the pair's center of mass.
-2.  **Potential Energy Accounting:** This repositioning alters the inter-particle distance, changing their mutual gravitational potential energy. This `pe_change` is precisely calculated.
-3.  **Inelastic Impulse:** Velocities are updated based on the `coefficient_of_restitution`, which models the kinetic energy dissipated during the collision.
-4.  **First Law of Thermodynamics:** The net thermal energy (heat) generated is calculated by balancing the system's energy budget, directly enforcing the law of conservation of energy:
-    ```
-    heat_generated = kinetic_energy_lost - potential_energy_change
-    ```
-    This resulting thermal energy is then distributed between the particles, raising their internal temperatures.
-<br>
-
+The resolution process within the <code>_resolve_collision_jit</code> kernel is:
+<ol>
+    <li><strong>Overlap Resolution:</strong> Spatially overlapping particles are repositioned along their normal vector, preserving the pair's center of mass.</li>
+    <li><strong>Potential Energy Accounting:</strong> This repositioning alters the inter-particle distance, changing their mutual gravitational potential energy. This <code>pe_change</code> is precisely calculated.</li>
+    <li><strong>Inelastic Impulse:</strong> Velocities are updated based on the <code>coefficient_of_restitution</code>, which models the kinetic energy dissipated during the collision.</li>
+    <li><strong>First Law of Thermodynamics:</strong> The net thermal energy (heat) generated is calculated by balancing the system's energy budget, directly enforcing the law of conservation of energy:
+    <blockquote>
+    <code>heat_generated = kinetic_energy_lost - potential_energy_change</code>
+    </blockquote>
+    This resulting thermal energy is then distributed between the particles, raising their internal temperatures.</li>
+</ol>
 </details>
 
 <details>
 <summary><strong>4. Advanced Thermodynamic Modeling</strong></summary>
-
 <br>
 The simulation incorporates several thermodynamic processes that contribute to emergent, system-wide behaviors:
-
-*   **Thermal Conduction:** Particles in physical contact exchange thermal energy at a rate proportional to their temperature differential, an abstraction of Fourier's law of heat conduction. This process is accelerated by the spatial grid.
-*   **Radiative Cooling:** The entire system slowly loses energy via a `thermal_damping_factor`, which models black-body radiation into the vacuum of space. This prevents runaway temperature escalation and allows the system to approach thermal equilibrium.
-*   **Explosive Events:** Particles exceeding a critical temperature threshold undergo a catastrophic explosion. Their entire thermal energy is converted into kinetic energy and imparted as a shockwave to their neighbors, simulating phenomena like supernovae and removing the source particle from the system.
-<br>
-
+<ul>
+    <li><strong>Thermal Conduction:</strong> Particles in physical contact exchange thermal energy at a rate proportional to their temperature differential, an abstraction of Fourier's law of heat conduction. This process is accelerated by the spatial grid.</li>
+    <li><strong>Radiative Cooling:</strong> The entire system slowly loses energy via a <code>thermal_damping_factor</code>, which models black-body radiation into the vacuum of space. This prevents runaway temperature escalation and allows the system to approach thermal equilibrium.</li>
+    <li><strong>Explosive Events:</strong> Particles exceeding a critical temperature threshold undergo a catastrophic explosion. Their entire thermal energy is converted into kinetic energy and imparted as a shockwave to their neighbors, simulating phenomena like supernovae and removing the source particle from the system.</li>
+</ul>
 </details>
 
 ---
@@ -90,58 +113,56 @@ The simulation incorporates several thermodynamic processes that contribute to e
 
 <details>
 <summary><strong>1. Hybrid Spatial Partitioning</strong></summary>
-
 <br>
 The simulation employs a sophisticated, dual-pronged strategy for spatial partitioning, leveraging the optimal data structure for each physical interaction domain:
-*   **QuadTree (Barnes-Hut):** Ideal for the hierarchical, far-field approximations required for gravity. The entire tree is constructed and flattened into contiguous NumPy arrays for direct consumption by the Numba-JIT kernels.
-*   **Uniform Spatial Grid:** Utilized for broad-phase collision and heat transfer detection. This structure is optimal for identifying spatially local neighbors for short-range interactions, reducing the complexity of these checks from O(n²) to nearly O(n).
-<br>
-
+<ul>
+    <li><strong>QuadTree (Barnes-Hut):</strong> Ideal for the hierarchical, far-field approximations required for gravity. The entire tree is constructed and flattened into contiguous NumPy arrays for direct consumption by the Numba-JIT kernels.</li>
+    <li><strong>Uniform Spatial Grid:</strong> Utilized for broad-phase collision and heat transfer detection. This structure is optimal for identifying spatially local neighbors for short-range interactions, reducing the complexity of these checks from O(n²) to nearly O(n).</li>
+</ul>
 </details>
 
 <details>
 <summary><strong>2. Just-in-Time (JIT) Compilation with Numba</strong></summary>
-
 <br>
-The most computationally intensive kernels of the simulation are written in a restricted, high-performance subset of Python and compiled to optimized machine code at runtime using **Numba**. This "zero-overhead" approach applies to:
-*   The entire Barnes-Hut gravity calculation, including tree traversal.
-*   The QuadTree construction, center-of-mass calculation, and flattening routines.
-*   The spatial grid traversal and all pairwise collision and heat transfer physics.
-<br>
-
+The most computationally intensive kernels of the simulation are written in a restricted, high-performance subset of Python and compiled to optimized machine code at runtime using <strong>Numba</strong>. This "zero-overhead" approach applies to:
+<ul>
+    <li>The entire Barnes-Hut gravity calculation, including tree traversal.</li>
+    <li>The QuadTree construction, center-of-mass calculation, and flattening routines.</li>
+    <li>The spatial grid traversal and all pairwise collision and heat transfer physics.</li>
+</ul>
 </details>
 
 <details>
 <summary><strong>3. Vectorization and Memory Management</strong></summary>
-
 <br>
-All particle data is stored as **NumPy** arrays (Structure of Arrays), enabling vectorized operations that delegate computations to highly optimized, low-level C and Fortran libraries. To eliminate runtime overhead, memory for the QuadTree nodes is pre-allocated at the start of each frame, avoiding costly dynamic memory allocation within the simulation loop.
-<br>
-
+All particle data is stored as <strong>NumPy</strong> arrays (Structure of Arrays), enabling vectorized operations that delegate computations to highly optimized, low-level C and Fortran libraries. To eliminate runtime overhead, memory for the QuadTree nodes is pre-allocated at the start of each frame, avoiding costly dynamic memory allocation within the simulation loop.
 </details>
 
 ---
 
 ## Visualization
 
-*   **Rendering Engine:** The simulation state is visualized in real-time using **Pygame**.
-*   **Thermodynamic Coloring:** Particle color is mapped directly to its temperature, following a physically-inspired black-body radiation spectrum. The gradient progresses from black through purple, blue, green, yellow, red, and finally to white-hot, providing intuitive visual feedback on the system's energy distribution.
-*   **Bloom Post-Processing:** A post-processing bloom effect is applied to high-temperature particles, creating a luminous glow that enhances the visual representation of energetic events and dense, hot clusters.
+- **Rendering Engine**
+  - The simulation state is visualized in real-time using **Pygame**.
+- **Thermodynamic Coloring**
+  - Particle color is mapped directly to its temperature, following a physically-inspired black-body radiation spectrum. The gradient progresses from black through purple, blue, green, yellow, red, and finally to white-hot, providing intuitive visual feedback on the system's energy distribution.
+- **Bloom Post-Processing**
+  - A post-processing bloom effect is applied to high-temperature particles, creating a luminous glow that enhances the visual representation of energetic events and dense, hot clusters.
 
 ---
 
 ## How to Run the Simulation
 
 ### 1. Prerequisites
-*   Python 3.x
-*   Pygame
-*   NumPy
-*   Numba
+A working installation of Python 3.x is required. The necessary libraries can be installed via pip:
+```bash
+pip install pygame numpy numba
+```
 
 ### 2. Configuration
 Simulation behavior is controlled by two primary files:
-*   <kbd>constants.py</kbd>: Defines static application values like screen resolution and rendering constants.
-*   <kbd>config.json</kbd>: Controls the tunable parameters of the scientific experiment.
+- <kbd>constants.py</kbd>: Defines static application values like screen resolution and rendering constants.
+- <kbd>config.json</kbd>: Controls the tunable parameters of the scientific experiment.
 
 | Parameter | Description |
 | :--- | :--- |
@@ -155,7 +176,7 @@ Simulation behavior is controlled by two primary files:
 | <kbd>grid_cell_size_multiplier</kbd>| A tuning parameter for the collision detection grid's cell size. |
 
 ### 3. Execution
-Execute the main script from your terminal:
+To run the simulation, execute the main script from your terminal:
 ```bash
 python main.py
 ```
