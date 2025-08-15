@@ -548,6 +548,14 @@ class ParticleSystem:
         # Handle heat transfer between adjacent particles
         self._handle_heat_transfer()
 
+        # --- Radiative Cooling (Thermal Damping) ---
+        # This is a scientifically-grounded abstraction (Rule 8) for black-body
+        # radiation, where particles slowly lose heat to the environment.
+        # A linear damping factor is used for performance and simplicity.
+        damping_factor = self.config.get('thermal_damping_factor', 0.0)
+        if damping_factor > 0:
+            self.temperatures *= (1.0 - damping_factor)
+
         # Handle boundary interactions as the final step
         self._check_boundary_collisions()
 
