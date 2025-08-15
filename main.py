@@ -23,10 +23,11 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
     first_log = True
     accumulated_pe_gain = 0.0
     accumulated_ke_loss = 0.0
+    accumulated_heat = 0.0
     accumulated_integration_error = 0.0
 
     # --- Profiling Configuration (Rule 11) ---
-    PROFILING_TICKS = 1000
+    PROFILING_TICKS = 100000
 
     while running and tick < PROFILING_TICKS:
         # Event handling
@@ -53,6 +54,7 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
         accumulated_integration_error += integration_error_this_tick
         accumulated_pe_gain += particle_system.pe_gain_collisions
         accumulated_ke_loss += particle_system.ke_loss_collisions
+        accumulated_heat += particle_system.heat_generated_collisions
 
         # --- Logging (Rule 2.4, throttled) ---
         if tick % 100 == 0:
@@ -81,11 +83,15 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
                 f"TotalSystemEnergy={total_energy:.2f}, "
                 f"Delta_E={delta_e:+.2f}, "
                 f"AccumulatedIntegrationError={accumulated_integration_error:+.2f}, "
-                f"ThermalCorrection={thermal_correction:+.2f}"
+                f"ThermalCorrection={thermal_correction:+.2f}, "
+                f"AccumulatedKE_Loss={accumulated_ke_loss:+.2f}, "
+                f"AccumulatedPE_Gain={accumulated_pe_gain:+.2f}, "
+                f"AccumulatedHeat={accumulated_heat:+.2f}"
             )
 
             accumulated_pe_gain = 0.0
             accumulated_ke_loss = 0.0
+            accumulated_heat = 0.0
             accumulated_integration_error = 0.0
 
         # --- Drawing ---
@@ -93,7 +99,7 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
         screen.blit(trail_surface, (0, 0))
 
         glow_surface = pygame.Surface((constants.WIDTH, constants.HEIGHT), pygame.SRCALPHA)
-        particle_system.draw(glow_surface)
+        particle_system.draw(glow_surface, is_glow_pass=True)
 
         scale = constants.BLOOM_RADIUS
         scaled_size = (constants.WIDTH // scale, constants.HEIGHT // scale)
@@ -104,7 +110,7 @@ def run_simulation_loop_for_profiling(particle_system, screen, clock, trail_surf
         blurred_surface.fill((intensity, intensity, intensity), special_flags=pygame.BLEND_RGB_MULT)
         screen.blit(blurred_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
 
-        particle_system.draw(screen)
+        particle_system.draw(screen, is_glow_pass=False)
         pygame.display.flip()
         clock.tick(constants.FPS)
         tick += 1

@@ -5,6 +5,7 @@ import pygame
 import logging
 import numba
 from quadtree import QuadTree, BoundingBox
+import constants
 
 logger = logging.getLogger("particle_sim")
 
@@ -141,6 +142,7 @@ def _handle_collisions_jit(grid_indices, grid_offsets, grid_width, grid_height, 
     """
     total_pe_change = 0.0
     total_ke_lost = 0.0
+    total_heat_generated = 0.0
     num_cells = grid_width * grid_height
 
     for cell_idx in range(num_cells):
@@ -155,13 +157,15 @@ def _handle_collisions_jit(grid_indices, grid_offsets, grid_width, grid_height, 
             p1_index = grid_indices[i]
             for j in range(i + 1, end_idx):
                 p2_index = grid_indices[j]
-                pe_change, ke_lost = _resolve_collision_jit(
+                pe_change, ke_lost, heat_generated = _resolve_collision_jit(
                     p1_index, p2_index, positions, velocities,
                     masses, radii, temperatures, heat_coeff, restitution,
                     g_const, softening, pos_correct_factor
                 )
                 total_pe_change += pe_change
                 total_ke_lost += ke_lost
+                if heat_generated > 0:
+                    total_heat_generated += heat_generated
 
         # 2. Check for collisions with neighboring cells
         for dy in [-1, 0, 1]:
@@ -182,14 +186,16 @@ def _handle_collisions_jit(grid_indices, grid_offsets, grid_width, grid_height, 
                         for p2_idx_ptr in range(neighbor_start_idx, neighbor_end_idx):
                             p2_index = grid_indices[p2_idx_ptr]
                             if p1_index < p2_index:
-                                pe_change, ke_lost = _resolve_collision_jit(
+                                pe_change, ke_lost, heat_generated = _resolve_collision_jit(
                                     p1_index, p2_index, positions, velocities,
                                     masses, radii, temperatures, heat_coeff, restitution,
                                     g_const, softening, pos_correct_factor
                                 )
                                 total_pe_change += pe_change
                                 total_ke_lost += ke_lost
-    return total_pe_change, total_ke_lost
+                                if heat_generated > 0:
+                                    total_heat_generated += heat_generated
+    return total_pe_change, total_ke_lost, total_heat_generated
 
 @numba.jit(nopython=True)
 def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatures, heat_coeff, restitution, g_const, softening, pos_correct_factor):
@@ -243,11 +249,15 @@ def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatu
         ke_after = 0.5 * m_i * np.sum(velocities[i]**2) + 0.5 * m_j * np.sum(velocities[j]**2)
         ke_lost = ke_before - ke_after
 
-        # In an inelastic collision, the lost kinetic energy is converted to heat.
-        # The potential energy change from resolving overlap is a separate
-        # energy transaction and should not cancel out the heat generation.
-        # This model is a more direct and physically grounded abstraction.
-        heat_generated = ke_lost
+        # Per the law of conservation of energy, the total energy of the
+        # interacting pair must be constant.
+        # E_before = KE_before + PE_before
+        # E_after = KE_after + PE_after + Heat
+        # Therefore, Heat = (KE_before - KE_after) - (PE_after - PE_before)
+        # Heat = ke_lost - pe_change
+        # The energy to push particles apart (pe_change) must be paid for
+        # by the available kinetic energy.
+        heat_generated = ke_lost - pe_change
 
         if heat_generated > 0: # Only add heat, don't remove it.
             # Distribute the net energy change as heat.
@@ -255,7 +265,7 @@ def _resolve_collision_jit(i, j, positions, velocities, masses, radii, temperatu
             temperatures[i][0] += (heat_generated * 0.5) / m_i
             temperatures[j][0] += (heat_generated * 0.5) / m_j
 
-    return pe_change, ke_lost
+    return pe_change, ke_lost, heat_generated
 
 
 class ParticleSystem:
@@ -286,6 +296,7 @@ class ParticleSystem:
         # --- Energy tracking variables for logging ---
         self.pe_gain_collisions = 0.0
         self.ke_loss_collisions = 0.0
+        self.heat_generated_collisions = 0.0
 
         # --- Initialize properties using NumPy arrays (Structure of Arrays) ---
         self.positions = rng.random((num_particles, 2)) * self.bounds
@@ -326,37 +337,6 @@ class ParticleSystem:
         logger.info(f"ParticleSystem created for {num_particles} particles.")
         logger.info(f"Spatial grid initialized with cell size {self.cell_size} ({self.grid_width}x{self.grid_height} cells).")
         logger.info(f"QuadTree initialized with boundary: {qtree_boundary}")
-
-    def _get_colors(self):
-        """
-        Vectorized color calculation based on temperature.
-        Maps temperature from a min/max range to a Red -> Yellow -> White gradient.
-        """
-        # Normalize temperature to a 0-1 range
-        norm_temp = (self.temperatures - self.config['min_temp']) / (self.config['max_temp'] - self.config['min_temp'])
-        norm_temp = np.clip(norm_temp, 0, 1)
-
-        # Create color array
-        colors = np.zeros((self.num_particles, 3), dtype=int)
-
-        # Red to Yellow (norm_temp < 0.5)
-        mask1 = norm_temp < 0.5
-        t1 = norm_temp[mask1] * 2
-        colors[mask1.flatten()] = np.column_stack([
-            np.full(t1.shape, 255),
-            (t1 * 255).astype(int),
-            np.zeros(t1.shape)
-        ])
-
-        # Yellow to White (norm_temp >= 0.5)
-        mask2 = norm_temp >= 0.5
-        t2 = (norm_temp[mask2] - 0.5) * 2
-        colors[mask2.flatten()] = np.column_stack([
-            np.full(t2.shape, 255),
-            np.full(t2.shape, 255),
-            (t2 * 255).astype(int)
-        ])
-        return colors
 
     def _calculate_gravity(self):
         """
@@ -399,8 +379,9 @@ class ParticleSystem:
         """
         total_pe_change = 0.0
         total_ke_lost = 0.0
+        total_heat_generated = 0.0
         for _ in range(self.collision_solver_iterations):
-            pe_change, ke_lost = _handle_collisions_jit(
+            pe_change, ke_lost, heat_generated = _handle_collisions_jit(
                 self.grid_indices,
                 self.grid_offsets,
                 self.grid_width,
@@ -418,9 +399,11 @@ class ParticleSystem:
             )
             total_pe_change += pe_change
             total_ke_lost += ke_lost
+            total_heat_generated += heat_generated
 
         self.pe_gain_collisions = total_pe_change
         self.ke_loss_collisions = total_ke_lost
+        self.heat_generated_collisions = total_heat_generated
 
     def _check_boundary_collisions(self):
         """
@@ -473,17 +456,65 @@ class ParticleSystem:
         # Handle boundary interactions as the final step
         self._check_boundary_collisions()
 
-    def draw(self, screen: pygame.Surface):
+    def _interpolate_color(self, norm_temp: float):
+        """
+        Calculates a smooth color by linearly interpolating between keyframes.
+        """
+        # Find the two keyframes the temperature falls between.
+        for i in range(len(constants.COLOR_GRADIENT_KEYFRAMES) - 1):
+            pos1, color1 = constants.COLOR_GRADIENT_KEYFRAMES[i]
+            pos2, color2 = constants.COLOR_GRADIENT_KEYFRAMES[i+1]
+
+            if pos1 <= norm_temp <= pos2:
+                # Calculate the interpolation factor within this segment.
+                local_t = (norm_temp - pos1) / (pos2 - pos1)
+
+                # Interpolate each color channel.
+                r = int(color1[0] * (1 - local_t) + color2[0] * local_t)
+                g = int(color1[1] * (1 - local_t) + color2[1] * local_t)
+                b = int(color1[2] * (1 - local_t) + color2[2] * local_t)
+                return (r, g, b)
+        
+        # If outside the range (due to floating point error), return the last color.
+        return constants.COLOR_GRADIENT_KEYFRAMES[-1][1]
+
+    def draw(self, screen: pygame.Surface, is_glow_pass: bool):
         """
         Draws all particles on the screen.
+        This method contains simple, explicit logic to determine particle color
+        and is robust against numerical errors from the physics engine.
         """
-        colors = self._get_colors()
+        # --- Step 1: Sanitize temperature data to prevent crashes ---
+        sane_temps = np.nan_to_num(
+            self.temperatures,
+            nan=constants.COLOR_MIN_TEMP,
+            posinf=constants.COLOR_MAX_TEMP,
+            neginf=constants.COLOR_MIN_TEMP
+        )
+        # Normalize all temperatures at once for efficiency
+        normalized_temps = np.clip((sane_temps - constants.COLOR_MIN_TEMP) / (constants.COLOR_MAX_TEMP - constants.COLOR_MIN_TEMP), 0, 1)
+
+        # --- Step 2: Loop through each particle and draw it ---
         for i in range(self.num_particles):
+            norm_temp = normalized_temps[i, 0]
+
+            # --- Step 3: Get the smoothly interpolated RGB color ---
+            rgb_color = self._interpolate_color(norm_temp)
+
+            # --- Step 4: Set final color format based on the rendering pass ---
+            if is_glow_pass:
+                # The glow surface needs a 4-component RGBA color.
+                final_color = (*rgb_color, 255)
+            else:
+                # The main screen needs a 3-component RGB color.
+                final_color = rgb_color
+
+            # --- Step 5: Draw the circle with clean, Python-native types ---
             pygame.draw.circle(
                 screen,
-                colors[i],
-                self.positions[i].astype(int),
-                self.radii[i][0]
+                final_color,
+                (int(self.positions[i, 0]), int(self.positions[i, 1])),
+                int(self.radii[i, 0])
             )
 
     def _build_spatial_grid(self):
