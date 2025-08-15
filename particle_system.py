@@ -659,7 +659,10 @@ class ParticleSystem:
         for p_idx in exploding_indices:
             # Get thermal energy to be converted to kinetic energy.
             # We index with [0] to extract the scalar value from the NumPy array.
-            explosion_energy = (self.masses[p_idx] * self.temperatures[p_idx])[0]
+            thermal_energy = (self.masses[p_idx] * self.temperatures[p_idx])[0]
+
+            # Apply the efficiency factor. The rest of the energy is "lost" (radiated).
+            explosion_energy = thermal_energy * self.config.get('explosion_efficiency', 0.1) # Default to 10%
 
             # Find neighbors using the spatial grid
             neighbor_indices = self._get_neighbors_from_grid(p_idx)

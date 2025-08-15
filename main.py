@@ -149,6 +149,15 @@ def main():
 
     trail_surface = pygame.Surface((constants.WIDTH, constants.HEIGHT), pygame.SRCALPHA)
 
+    # --- Prime the physics engine (Rule 5) ---
+    # This initial calculation is crucial. It populates the QuadTree's flattened
+    # cache, which is required for an accurate potential energy calculation on the
+    # very first tick. Without this, the first energy delta is miscalculated as
+    # the entire potential energy of the system, causing a massive, incorrect
+    # thermal correction that makes the system instantly unstable.
+    particle_system._calculate_gravity()
+
+
     # --- Profiling Run (Rule 11) ---
     profiler = cProfile.Profile()
     profiler.enable()
